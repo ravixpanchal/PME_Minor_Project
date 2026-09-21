@@ -1,0 +1,54 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# Test and coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.whl
+
+# Environment and secrets
+.env
+.env.*
+*.pem
+*.key
+secrets.*
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and local databases
+*.log
+*.sqlite3
+*.db
+
+# Streamlit local state
+.streamlit/
+
+# Project-specific generated output and datasets
+# Keep placeholder files while excluding reports, databases, PDFs, and exports.
+**/data/*
+!**/data/.gitkeep
