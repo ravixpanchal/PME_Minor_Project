@@ -4,6 +4,7 @@ import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
+import logging
 
 import streamlit as st
 from sqlalchemy import select
@@ -22,6 +23,10 @@ from pme.repository import (
     get_latest_examination_for_candidate,
     search_candidates,
 )
+from pme.source_images import get_original_image_paths
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 st.set_page_config(
@@ -107,6 +112,55 @@ def show_candidate(candidate: Candidate) -> None:
             f'found in the database · Roll number {display(candidate.roll_number)}</div>',
             unsafe_allow_html=True,
         )
+        extraction_runs = sorted(
+            examination.extraction_runs,
+            key=lambda extraction: extraction.id,
+            reverse=True,
+        )
+        document_id = (
+            extraction_runs[0].document_id
+            if extraction_runs
+            else None
+        )
+        st.markdown(
+            '<div class="detail-card"><h4>Original candidate images</h4>',
+            unsafe_allow_html=True,
+        )
+        if document_id is None:
+            LOGGER.warning(
+                "Candidate id=%s has no extraction run/document_id",
+                candidate.id,
+            )
+            st.warning(
+                "Candidate found, but original image is not available."
+            )
+        else:
+            image_paths = get_original_image_paths(document_id)
+            if image_paths:
+                image_columns = st.columns(
+                    min(len(image_paths), 4)
+                )
+                for index, image_path in enumerate(image_paths):
+                    with image_columns[index % len(image_columns)]:
+                        st.image(
+                            str(image_path),
+                            caption=image_path.name,
+                            use_container_width=True,
+                        )
+                st.caption(
+                    f"Hash/Source ID: `{document_id}` · "
+                    f"{len(image_paths)} original image(s)"
+                )
+            else:
+                LOGGER.warning(
+                    "Candidate id=%s document_id=%s has no source images",
+                    candidate.id,
+                    document_id,
+                )
+                st.warning(
+                    "Candidate found, but original image is not available."
+                )
+        st.markdown("</div>", unsafe_allow_html=True)
         left, right = st.columns(2)
         with left:
             st.markdown('<div class="detail-card"><h4>Candidate identity</h4>', unsafe_allow_html=True)
@@ -177,6 +231,10 @@ def show_candidate(candidate: Candidate) -> None:
             else:
                 st.caption("No declarations stored.")
             st.markdown("</div>", unsafe_allow_html=True)
+
+        if extraction_runs:
+            with st.expander("Complete extracted data", expanded=False):
+                st.json(extraction_runs[0].raw_json)
 
 
 def main() -> None:

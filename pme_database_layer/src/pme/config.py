@@ -16,6 +16,8 @@ DEFAULT_EXTRACTION_DIR = (
     WORKSPACE_ROOT / "data" / "processed" / "extractions"
 )
 
+DEFAULT_INTERIM_DIR = WORKSPACE_ROOT / "data" / "interim"
+
 
 def get_database_url() -> str:
     return os.getenv(
@@ -31,3 +33,12 @@ def get_extraction_dir() -> Path:
         return Path(value)
 
     return DEFAULT_EXTRACTION_DIR
+
+
+def get_interim_dir() -> Path:
+    value = os.getenv("INTERIM_DIR")
+
+    if value:
+        return Path(value)
+
+    return DEFAULT_INTERIM_DIR

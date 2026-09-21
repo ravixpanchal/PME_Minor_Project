@@ -121,6 +121,11 @@ Enter all three values together:
 The DOB field is a text field and must use `DD-MM-YYYY` format. After a
 successful search, the dashboard displays candidate identity, examination,
 PME, vision, fitness, physical, and declaration details.
+It also displays the original high-resolution pages from
+`../data/interim/high_res/<document_id>/` and the complete validated extraction
+payload. The image directory is resolved using the same `document_id` stored in
+`extraction_runs`; it never matches images by candidate name. Set `INTERIM_DIR`
+to override the interim-data root when running the dashboard.
 
 Use **Candidate directory** in the sidebar to browse stored candidates.
 
