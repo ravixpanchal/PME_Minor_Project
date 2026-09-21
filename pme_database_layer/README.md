@@ -126,8 +126,13 @@ It also displays the original high-resolution pages from
 payload. The image directory is resolved using the same `document_id` stored in
 `extraction_runs`; it never matches images by candidate name. Set `INTERIM_DIR`
 to override the interim-data root when running the dashboard.
+Candidate name and father's name searches are case-insensitive, so uppercase,
+lowercase, or mixed-case input is accepted.
 
 Use **Candidate directory** in the sidebar to browse stored candidates.
+The directory provides a searchable, sortable table with formatted dates and
+identity fields, while the search view presents the record in structured
+identity, examination, clinical, declaration, and original-image sections.
 
 ## Database
 

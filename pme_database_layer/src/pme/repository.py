@@ -17,6 +17,11 @@ from .models import (
 )
 
 
+def normalize_search_text(value: str) -> str:
+    """Normalize identity text so searches are case- and whitespace-insensitive."""
+    return " ".join(value.split()).casefold()
+
+
 def get_candidate_by_roll_number(
     session: Session,
     roll_number: str,
@@ -39,8 +44,8 @@ def search_candidates(
     date_of_birth,
 ) -> list[Candidate]:
     """Search candidates using the dashboard's identity tuple."""
-    normalized_name = " ".join(name.split()).strip().casefold()
-    normalized_father = " ".join(father_name.split()).strip().casefold()
+    normalized_name = normalize_search_text(name)
+    normalized_father = normalize_search_text(father_name)
     return list(session.scalars(
         select(Candidate).where(and_(
             func.lower(func.trim(Candidate.candidate_name)) == normalized_name,
