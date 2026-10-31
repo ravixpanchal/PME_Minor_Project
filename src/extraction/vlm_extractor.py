@@ -21,6 +21,7 @@ from src.models.fields import (count_non_null, null_shape, prompt_skeleton,
 from src.models.schemas import SchemaConfig
 from src.utils.config_loader import config
 from src.utils.logger import setup_logger
+from src.utils.vlm_runtime import load_vlm
 
 log = setup_logger("extraction")
 
@@ -156,19 +157,9 @@ def parse_extraction_output(raw: str, schema: SchemaConfig) -> tuple:
 
 class VlmSchemaExtractor:
     def __init__(self, model_id: Optional[str] = None):
-        try:
-            import torch
-            from transformers import (AutoProcessor,
-                                      Qwen2_5_VLForConditionalGeneration)
-        except ImportError as e:
-            raise RuntimeError(
-                "VLM dependencies missing. Run: uv sync --extra vlm") from e
-        self.torch = torch
         self.model_id = model_id or config.models["extraction"]["default_vlm"]
-        log.info("loading %s (bf16, single GPU)...", self.model_id)
-        self.processor = AutoProcessor.from_pretrained(self.model_id)
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            self.model_id, torch_dtype=torch.bfloat16, device_map="cuda:0")
+        log.info("loading %s", self.model_id)
+        self.torch, self.processor, self.model = load_vlm(self.model_id)
         self.schema = config.schema
 
     def _ask(self, imgs: list, prompt: str,

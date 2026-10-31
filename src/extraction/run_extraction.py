@@ -17,6 +17,8 @@ Outputs (Group 1 contract location, PII — gitignored via data/):
 """
 import argparse
 import json
+import re
+import yaml
 import sys
 from datetime import datetime, timezone
 
@@ -26,7 +28,8 @@ from src.extraction.vlm_extractor import (DEFAULT_LONG_EDGE_HIRES,
                                            VlmSchemaExtractor)
 from src.models.fields import (flatten_fields, iter_leaves,
                                unflatten_fields)
-from src.models.schemas import ExtractionRecord, ProvenanceEntry
+from src.models.schemas import DoctorRecognition, ExtractionRecord, ProvenanceEntry
+from src.extraction.doctor_recognition import DoctorRecognizer, RecognitionConfig
 from src.utils.config_loader import config
 from src.utils.logger import setup_logger
 
@@ -40,10 +43,28 @@ def _resolve(row, source):
     val = row.get(SOURCE_COLS[source])
     if val is None or (isinstance(val, float) and pd.isna(val)) or val == "":
         return None
-    return config.root_dir / val
+    path = config.root_dir / val
+    return path if path.is_file() else None
 
 
-def main() -> int:
+def write_record(path, record):
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(record.model_dump_json(indent=2))
+    temporary.replace(path)
+
+
+def recognize_doctor(recognizer, doc, pages, out_dir):
+    # Raw renders preserve pen strokes and use a consistent coordinate frame.
+    try:
+        paths = {int(row["page_index"]): config.root_dir / row["high_res_raw_path"]
+                 for _, row in pages.iterrows() if int(row["page_index"]) in (2, 3)}
+        return recognizer.process(doc, paths, out_dir)
+    except Exception as exc:
+        log.exception("doc %s: doctor recognition failed", doc)
+        return DoctorRecognition(status="error", notes=[str(exc)])
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ndocs", type=int, default=None,
                     help="first N complete person-documents")
@@ -56,7 +77,7 @@ def main() -> int:
                     help="document = single pass over all 4 pages, one JSON "
                          "per person (default); per_page = one call per page "
                          "+ first-non-null merge (A/B fallback)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     manifest = config.get_path("manifest_file")
     if not manifest.exists():
@@ -66,8 +87,6 @@ def main() -> int:
     if args.source != "raw" and SOURCE_COLS[args.source] not in df.columns:
         log.warning("manifest lacks %s — run preprocessing; falling back to raw",
                     SOURCE_COLS[args.source])
-    if "blank_page_flag" in df.columns:
-        df = df[~df["blank_page_flag"].fillna(False).astype(bool)]
 
     doc_ids = list(dict.fromkeys(df["document_id"]))   # manifest order
     if args.doc:
@@ -82,7 +101,10 @@ def main() -> int:
         config.pipeline.rendering.vlm_long_edge_px if args.source == "vlm"
         else DEFAULT_LONG_EDGE_HIRES)
 
+    recognition_config = RecognitionConfig(**yaml.safe_load(
+        (config.config_dir / "doctor_recognition.yaml").read_text()))
     extractor = VlmSchemaExtractor()
+    recognizer = DoctorRecognizer(extractor, config.root_dir, recognition_config)
     out_root = config.get_path("processed_dir") / "extractions"
     n_pages = n_fail = 0
     # provenance attribution for document mode: every leaf is credited to the
@@ -94,10 +116,14 @@ def main() -> int:
     for doc in doc_ids:
         rec_path = out_root / doc / "record.json"
         if rec_path.exists() and not args.overwrite:
-            log.info("doc %s: record exists, skipping (--overwrite to redo)",
+            log.info("doc %s: record exists, skipping (--overwrite to redo, including doctor recognition)",
                      doc[:12])
             continue
         pages = df[df.document_id == doc].sort_values("page_index")
+        if list(pages["page_index"]) != [0, 1, 2, 3]:
+            n_fail += 1
+            log.error("doc %s: expected exactly pages 0..3, refusing partial/misordered report", doc)
+            continue
         schema_fields = extractor.schema.fields
         # person -> document mapping (acceptance: correct and logged)
         img_paths = [(_resolve(row, args.source)
@@ -123,7 +149,7 @@ def main() -> int:
                             doc[:12])
             extracted_at = datetime.now(timezone.utc).isoformat()
             leaves = flatten_fields(fields, schema_fields)
-            provenance = {path: {"page_index": leaf_page.get(path, 0),
+            provenance = {path: {"page_index": leaf_page.get(re.sub(r"\[\d+\]", "", path), 0),
                                  "model": extractor.model_id,
                                  "extracted_at": extracted_at,
                                  "raw_value": val}
@@ -145,7 +171,10 @@ def main() -> int:
             (out_dir / "document.json").write_text(
                 json.dumps(sidecar, indent=2))
             rec_path.parent.mkdir(parents=True, exist_ok=True)
-            rec_path.write_text(record.model_dump_json(indent=2))
+            record.doctor_recognition = recognize_doctor(recognizer, doc, pages, out_dir)
+            if record.doctor_recognition.status == "error":
+                n_fail += 1
+            write_record(rec_path, record)
             log.info("doc %s: %d field-values non-null "
                      "(single pass, %d pages)", doc[:12],
                      sum(v is not None for v in leaves.values()),
@@ -176,6 +205,8 @@ def main() -> int:
                 page_json.parent.mkdir(parents=True, exist_ok=True)
                 page_json.write_text(json.dumps(entry, indent=2))
                 pages_covered.append(idx)
+                if not ok:
+                    n_fail += 1
                 page_leaves = flatten_fields(page_fields, schema_fields)
                 for path, val in page_leaves.items():
                     if val is None:
@@ -199,7 +230,10 @@ def main() -> int:
             provenance={k: ProvenanceEntry(**v) for k, v in provenance.items()},
             conflicts=conflicts, pages_covered=pages_covered)
         rec_path.parent.mkdir(parents=True, exist_ok=True)
-        rec_path.write_text(record.model_dump_json(indent=2))
+        record.doctor_recognition = recognize_doctor(recognizer, doc, pages, rec_path.parent)
+        if record.doctor_recognition.status == "error":
+            n_fail += 1
+        write_record(rec_path, record)
         log.info("doc %s: %d field-values non-null, %d conflicts, %d pages",
                  doc[:12], len(leaves), len(conflicts), len(pages_covered))
 

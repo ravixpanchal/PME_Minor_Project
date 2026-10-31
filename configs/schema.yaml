@@ -141,6 +141,15 @@ fields:
               source_type: handwritten
               extraction_hint: "Numeric value under column L; null if unreadable."
 
+      - field_name: chest_xray_result
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Transcribe the corresponding finding or advice on page 2; null if absent."
+      - field_name: advice
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Transcribe the corresponding finding or advice on page 2; null if absent."
+
       - field_name: handwritten_remarks
         data_type: string
         source_type: handwritten
@@ -235,6 +244,67 @@ fields:
                 source_type: handwritten
                 extraction_hint: "L.E. row, Power of glasses > A; null if blank."
 
+      - field_name: color_perception
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: binocular_vision
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: night_vision
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: field_of_vision
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: urine
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: hearing
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: pr
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: bp
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: cvs
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: rs
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: pia
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: spine
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: heart
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: lungs
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+      - field_name: general_physical_examination
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read the corresponding labeled clinical finding on page 3; transcribe literally, null if absent."
+
       - field_name: handwritten_text_below_vision_table
         data_type: string
         source_type: handwritten
@@ -248,6 +318,19 @@ fields:
     page: 4
     extraction_hint: "Declaration by the candidate: a Particulars table plus PART-I and PART-II question tables. Each question row has a printed number and a handwritten answer."
     children:
+      - field_name: mobile_number
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read candidate particulars or declaration date on page 4; null if absent."
+      - field_name: email
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read candidate particulars or declaration date on page 4; null if absent."
+      - field_name: declaration_date
+        data_type: string
+        source_type: handwritten
+        extraction_hint: "Read candidate particulars or declaration date on page 4; null if absent."
+
       - field_name: part_one
         data_type: array
         printed_row_label: "PART-I"

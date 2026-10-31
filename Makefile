@@ -1,27 +1,17 @@
-.PHONY: build shell test verify-gpu clean gpu
-
-COMPOSE := docker compose -f docker/docker-compose.yml
-COMPOSE_GPU := docker compose -f docker/docker-compose.yml -f docker/docker-compose.gpu.yml
+.PHONY: build shell test verify-gpu gpu
 
 build:
-	$(COMPOSE) build
+	uv sync --extra vlm
 
 shell:
-	$(COMPOSE) run --rm foundation bash
-
-# Verifies GPU passthrough (nvidia-smi must work inside the container)
-verify-gpu:
-	$(COMPOSE_GPU) run --rm foundation python src/verify_gpu.py
+	uv run bash
 
 test:
-	$(COMPOSE) run --rm foundation pytest tests/ -v
+	uv run --group dev pytest tests/ -q
 
-# Runs a command inside the container WITH GPU access (Phase 5+ only)
-# Usage: make gpu CMD="python -m src.detection.pose_splits"
+verify-gpu:
+	uv run --extra vlm python -m src.verify_gpu
+
+# Example: make gpu CMD="python -m src.extraction.run_extraction --source raw"
 gpu:
-	$(COMPOSE_GPU) run --rm foundation $(CMD)
-
-clean:
-	find data/interim data/metadata data/processed -type f ! -name '.gitkeep' -delete
-	find . -type d -name "__pycache__" -exec rm -rf {} +
-	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	uv run --extra vlm $(CMD)
