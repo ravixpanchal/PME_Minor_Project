@@ -238,6 +238,18 @@ def show_candidate(candidate: Candidate) -> None:
                     st.image(str(path), caption=f"Doctor {kind}")
                 else:
                     st.info(f"Doctor {kind} unavailable")
+        for evidence in doctor.get("evidence", []):
+            with st.expander(f"Doctor evidence — report page {evidence['page_index'] + 1}"):
+                for kind, label in (("annotated", "Original page with bounding boxes"),
+                                    ("combined", "Stamp and signature region")):
+                    relative = evidence.get(f"{kind}_path")
+                    path = (REPO_DIR / relative).resolve() if relative else None
+                    if path and path.is_relative_to((REPO_DIR / "data").resolve()) and path.is_file():
+                        st.image(str(path), caption=label, use_container_width=True)
+                st.caption("Blue: signature · Orange: stamp · Green: combined region")
+                st.caption(f"Suitable for signature matching: {evidence.get('signature_usable', False)}")
+                if evidence.get("notes"):
+                    st.caption("; ".join(evidence["notes"]))
         if doctor.get("notes"):
             st.caption("; ".join(doctor["notes"]))
         with st.expander("All extracted fields"):

@@ -10,6 +10,9 @@ from .models import (
     Candidate,
     Declaration,
     Doctor,
+    DoctorEvidence,
+    DoctorRecognitionResult,
+    DoctorRegistryLink,
     ExtractionRun,
     FitnessClassification,
     MedicalExamination,
@@ -50,6 +53,41 @@ def parse_metrics(text):
     return output
 
 
+def store_doctor_result(session, run, recognition):
+    """Backfill or replace queryable evidence, retaining raw JSON for audit."""
+    if run.doctor_result is not None:
+        run.doctor_result = None
+        session.flush()
+    if recognition is None:
+        return
+    identity = None
+    if recognition.doctor_id and recognition.status in {"registered", "matched"}:
+        identity = session.get(DoctorRegistryLink, recognition.doctor_id)
+        if identity is None and run.examination.examining_doctor is not None:
+            doctor = run.examination.examining_doctor
+            bound = session.scalar(select(DoctorRegistryLink).where(
+                DoctorRegistryLink.doctor_id == doctor.id))
+            if bound is not None:
+                # Legacy imports may have merged namesakes; split the mapping
+                # during backfill without modifying the other examination.
+                doctor = Doctor(doctor_name=recognition.doctor_name or doctor.doctor_name,
+                                doctor_role=doctor.doctor_role)
+                session.add(doctor)
+                run.examination.examining_doctor = doctor
+                session.flush()
+            identity = DoctorRegistryLink(registry_id=recognition.doctor_id, doctor=doctor)
+            session.add(identity)
+            session.flush()
+    result = DoctorRecognitionResult(
+        registry_id=identity.registry_id if identity else None,
+        status=recognition.status, similarity=recognition.confidence,
+        algorithm=recognition.algorithm, observed_name=recognition.doctor_name,
+        notes=recognition.notes)
+    run.doctor_result = result
+    result.evidence = [DoctorEvidence(**item.model_dump()) for item in recognition.evidence]
+    session.flush()
+
+
 def import_one(session: Session, data: PMEExtraction):
     # ---------------------------------------------------------
     # Prevent duplicate imports
@@ -63,10 +101,15 @@ def import_one(session: Session, data: PMEExtraction):
     previous_candidate = existing.examination.candidate if existing else None
     if existing:
         if existing.raw_json == data.model_dump(mode="json"):
+            if existing.doctor_result is None and data.doctor_recognition is not None:
+                store_doctor_result(session, existing, data.doctor_recognition)
             return existing.examination, False
-        # Rebuild this document's examination atomically when extraction changes.
-        # The caller's transaction protects the previous data if validation fails.
-        session.delete(existing.examination)
+        # Replace dependent clinical data while retaining examination/run IDs.
+        examination = existing.examination
+        for relation in ("pme_case", "vision", "physical", "fitness"):
+            setattr(examination, relation, None)
+        examination.declarations.clear()
+        examination.examining_doctor = None
         session.flush()
 
     # ---------------------------------------------------------
@@ -120,6 +163,12 @@ def import_one(session: Session, data: PMEExtraction):
             "recruitment_cen": narrative.recruitment_cen,
         }
 
+        if roll_number and roll_number != candidate.roll_number:
+            owner = session.scalar(select(Candidate).where(Candidate.roll_number == roll_number))
+            if owner is not None or candidate.roll_number:
+                raise ValueError("Roll number conflicts with stored candidate identity; review required")
+            candidate.roll_number = roll_number
+
         for attribute, value in candidate_updates.items():
             if value in (None, ""):
                 continue
@@ -134,16 +183,12 @@ def import_one(session: Session, data: PMEExtraction):
     # ---------------------------------------------------------
     # Medical examination
     # ---------------------------------------------------------
-    examination = MedicalExamination(
-        candidate=candidate,
-        dv_date=general.dv_date,
-        medical_examination_date=general.medical_examination_date,
-        candidate_declaration_date=page4.declaration_date,
-        medical_class=clean(narrative.class_name),
-        identification_marks=clean(
-            physical_traits.permanent_physical_identification_marks
-        ),
-    )
+    examination = existing.examination if existing else MedicalExamination(candidate=candidate)
+    examination.dv_date = general.dv_date
+    examination.medical_examination_date = general.medical_examination_date
+    examination.candidate_declaration_date = page4.declaration_date
+    examination.medical_class = clean(narrative.class_name)
+    examination.identification_marks = clean(physical_traits.permanent_physical_identification_marks)
 
     session.add(examination)
     session.flush()
@@ -390,13 +435,14 @@ def import_one(session: Session, data: PMEExtraction):
         doctor_name = clean(page3.doctor_name or page4.doctor_name)
 
     if doctor_name:
-        doctor = session.scalar(
-            select(Doctor).where(
-                Doctor.doctor_name == doctor_name,
-                Doctor.doctor_role
-                == "Railway Medical Examiner",
-            )
-        )
+        link = session.get(DoctorRegistryLink, recognition.doctor_id) if recognition and recognition.doctor_id else None
+        statement = select(Doctor).where(
+            Doctor.doctor_name == doctor_name,
+            Doctor.doctor_role == "Railway Medical Examiner")
+        if recognition and recognition.doctor_id:
+            # Never collapse different gallery identities merely because names agree.
+            statement = statement.where(~Doctor.id.in_(select(DoctorRegistryLink.doctor_id)))
+        doctor = link.doctor if link else session.scalar(statement)
 
         if not doctor:
             doctor = Doctor(
@@ -421,17 +467,13 @@ def import_one(session: Session, data: PMEExtraction):
         None,
     )
 
-    extraction_run = ExtractionRun(
-        examination=examination,
-        document_id=data.document_id,
-        model_name=data.model,
-        extracted_at=extracted_at,
-        raw_json=data.model_dump(mode="json"),
-    )
-
+    extraction_run = existing or ExtractionRun(examination=examination, document_id=data.document_id)
+    extraction_run.model_name = data.model
+    extraction_run.extracted_at = extracted_at
+    extraction_run.raw_json = data.model_dump(mode="json")
     session.add(extraction_run)
-
     session.flush()
+    store_doctor_result(session, extraction_run, recognition)
 
     return examination, True
 

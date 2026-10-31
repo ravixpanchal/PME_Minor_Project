@@ -135,3 +135,74 @@ def test_disagreeing_ocr_never_enrolls(tmp_path):
     assert recognizer.process('doc', {2:path}, tmp_path/'doc').status == 'unmatched'
     with recognizer.registry.connect() as db:
         assert db.execute('SELECT count(*) FROM doctors').fetchone()[0] == 0
+
+
+def evidence_page(tmp_path):
+    page = Image.new('RGB', (1200, 600), 'white')
+    page.paste(ink(), (50, 50))
+    page.paste(ink(2), (650, 50))
+    path = tmp_path/'page.png'
+    page.save(path)
+    return path
+
+
+def test_annotation_coordinates_and_combined_crop(tmp_path):
+    from src.extraction.doctor_evidence import save_evidence
+    image = Image.new('RGB', (1000, 600), 'white')
+    boxes = {'signature': [.1, .2, .3, .4], 'stamp': [.4, .3, .6, .5]}
+    crops = {kind: crop_box(image, box) for kind, box in boxes.items()}
+    item = save_evidence(image, crops, boxes, 2, tmp_path/'doc', tmp_path)
+    assert item.boxes['combined'] == [.1, .2, .6, .5]
+    assert item.boxes_pixels['combined'] == [100, 120, 600, 300]
+    with Image.open(tmp_path/item.combined_path) as combined:
+        assert combined.size == (500, 180)
+    with Image.open(tmp_path/item.annotated_path) as annotated:
+        assert annotated.size == image.size
+        assert annotated.getpixel((100, 120)) != (255, 255, 255)
+
+
+def test_ocr_failure_preserves_extracted_crops(tmp_path):
+    path = evidence_page(tmp_path)
+    detection = '{"signature":[0.04,0.08,0.46,0.39],"stamp":[0.54,0.08,0.96,0.39],"same_doctor":true}'
+    recognizer = DoctorRecognizer(FakeExtractor([detection, 'invalid OCR']), tmp_path,
+                                 RecognitionConfig(registry_dir='gallery'))
+    result = recognizer.process('doc', {2:path}, tmp_path/'doc')
+    assert result.status == 'unmatched'
+    assert result.doctor_name is None
+    assert len(result.evidence) == 1
+    for value in (result.signature_path, result.stamp_path, result.annotated_path, result.combined_path):
+        assert (tmp_path/value).is_file()
+    assert result.notes
+
+
+def test_overlap_saved_but_never_matched(tmp_path):
+    path = evidence_page(tmp_path)
+    detection = '{"signature":[0.04,0.08,0.46,0.39],"stamp":[0.20,0.08,0.46,0.39],"same_doctor":true}'
+    recognizer = DoctorRecognizer(FakeExtractor([detection, '{"doctor_name":null}', '{"doctor_name":null}']),
+                                 tmp_path, RecognitionConfig(registry_dir='gallery'))
+    result = recognizer.process('doc', {2:path}, tmp_path/'doc')
+    assert result.status == 'needs_review'
+    assert result.signature_path and result.stamp_path
+    assert not result.evidence[0].signature_usable
+    assert result.evidence[0].notes
+    with recognizer.registry.connect() as db:
+        assert db.execute('SELECT count(*) FROM doctors').fetchone()[0] == 0
+
+
+def test_multiple_doctors_preserves_both_pages(tmp_path):
+    path = evidence_page(tmp_path)
+    detection = '{"signature":[0.04,0.08,0.46,0.39],"stamp":null,"multiple_doctors":true}'
+    recognizer = DoctorRecognizer(FakeExtractor([detection, detection]), tmp_path,
+                                 RecognitionConfig(registry_dir='gallery'))
+    result = recognizer.process('doc', {2:path,3:path}, tmp_path/'doc')
+    assert result.status == 'ambiguous'
+    assert len(result.evidence) == 2
+    assert all((tmp_path/e.annotated_path).is_file() for e in result.evidence)
+
+
+def test_reject_invalid_evidence_contract():
+    from pydantic import ValidationError
+    from src.models.schemas import DoctorPageEvidence
+    with pytest.raises(ValidationError):
+        DoctorPageEvidence(page_index=2, image_width=100, image_height=100,
+                           boxes={'signature':[0,0,float('nan'),.5]})

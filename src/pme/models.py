@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
-from sqlalchemy import Date, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase): pass
@@ -195,3 +195,60 @@ class ExtractionRun(Base):
     document_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     model_name: Mapped[str|None] = mapped_column(String(255)); extracted_at: Mapped[datetime|None] = mapped_column(DateTime(timezone=True)); raw_json: Mapped[dict[str,Any]] = mapped_column(JSON, nullable=False)
     examination: Mapped[MedicalExamination] = relationship(back_populates="extraction_runs")
+    doctor_result: Mapped["DoctorRecognitionResult | None"] = relationship(
+        back_populates="extraction_run", uselist=False, cascade="all, delete-orphan")
+
+
+class DoctorRegistryLink(Base):
+    """Stable gallery identity, separate from a doctor's display name."""
+    __tablename__ = "doctor_registry_links"
+    registry_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    doctor_id: Mapped[int] = mapped_column(ForeignKey("doctors.id"), nullable=False, unique=True)
+    doctor: Mapped[Doctor] = relationship()
+
+
+class DoctorRecognitionResult(Base):
+    __tablename__ = "doctor_recognition_results"
+    extraction_run_id: Mapped[int] = mapped_column(
+        ForeignKey("extraction_runs.id"), primary_key=True)
+    registry_id: Mapped[str | None] = mapped_column(
+        ForeignKey("doctor_registry_links.registry_id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    similarity: Mapped[float] = mapped_column(nullable=False)
+    algorithm: Mapped[str] = mapped_column(String(100), nullable=False)
+    observed_name: Mapped[str | None] = mapped_column(String(200))
+    notes: Mapped[list] = mapped_column(JSON, nullable=False)
+    extraction_run: Mapped[ExtractionRun] = relationship(back_populates="doctor_result")
+    evidence: Mapped[list["DoctorEvidence"]] = relationship(
+        back_populates="recognition", cascade="all, delete-orphan")
+    __table_args__ = (
+        CheckConstraint("similarity >= 0 AND similarity <= 1", name="ck_doctor_similarity"),
+    )
+
+
+class DoctorEvidence(Base):
+    __tablename__ = "doctor_evidence"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    extraction_run_id: Mapped[int] = mapped_column(
+        ForeignKey("doctor_recognition_results.extraction_run_id"), nullable=False, index=True)
+    page_index: Mapped[int] = mapped_column(nullable=False)
+    image_width: Mapped[int] = mapped_column(nullable=False)
+    image_height: Mapped[int] = mapped_column(nullable=False)
+    boxes: Mapped[dict] = mapped_column(JSON, nullable=False)
+    boxes_pixels: Mapped[dict] = mapped_column(JSON, nullable=False)
+    signature_path: Mapped[str | None] = mapped_column(Text)
+    stamp_path: Mapped[str | None] = mapped_column(Text)
+    combined_path: Mapped[str | None] = mapped_column(Text)
+    annotated_path: Mapped[str | None] = mapped_column(Text)
+    signature_usable: Mapped[bool] = mapped_column(nullable=False)
+    stamp_usable: Mapped[bool] = mapped_column(nullable=False)
+    same_doctor: Mapped[bool] = mapped_column(nullable=False)
+    stamp_text: Mapped[str | None] = mapped_column(Text)
+    doctor_name: Mapped[str | None] = mapped_column(String(200))
+    notes: Mapped[list] = mapped_column(JSON, nullable=False)
+    recognition: Mapped[DoctorRecognitionResult] = relationship(back_populates="evidence")
+    __table_args__ = (
+        UniqueConstraint("extraction_run_id", "page_index", name="uq_doctor_evidence_page"),
+        CheckConstraint("page_index IN (2, 3)", name="ck_doctor_evidence_page"),
+        CheckConstraint("image_width > 0 AND image_height > 0", name="ck_doctor_evidence_size"),
+    )

@@ -26,7 +26,7 @@ import pandas as pd
 
 from src.extraction.vlm_extractor import (DEFAULT_LONG_EDGE_HIRES,
                                            VlmSchemaExtractor)
-from src.models.fields import (flatten_fields, iter_leaves,
+from src.models.fields import (flatten_fields, iter_leaves, null_shape,
                                unflatten_fields)
 from src.models.schemas import DoctorRecognition, ExtractionRecord, ProvenanceEntry
 from src.extraction.doctor_recognition import DoctorRecognizer, RecognitionConfig
@@ -140,9 +140,8 @@ def main(argv=None) -> int:
                 n_pages += len(img_paths)
                 fields, ok = extractor.extract_document(img_paths, long_edge)
             except Exception as e:    # noqa: BLE001 — never crash the batch
-                n_fail += 1
-                log.error("doc %s FAILED: %s", doc[:12], e)
-                continue
+                log.error("doc %s field extraction FAILED: %s; still extracting doctor evidence", doc[:12], e)
+                fields, ok = null_shape(schema_fields), False
             if not ok:
                 n_fail += 1
                 log.warning("doc %s: PARSE FAILURE — record will be all-null",

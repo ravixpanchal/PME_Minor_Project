@@ -77,8 +77,9 @@ not an execution error. The dashboard Sync button is equivalent to `src.pme.sync
    loaded VLM to locate the medical examiner signature and stamp. Candidate and
    witness signatures are explicitly excluded. Coordinates are normalized to the
    raw image; malformed, tiny, oversized or out-of-bounds boxes are rejected.
-3. Reject blank, low-ink or blurred crops. Overlapping signature/stamp boxes are
-   rejected for signature matching, so printed stamp text cannot drive a match.
+3. Save localized crops and page annotations before OCR or recognition. Blank,
+   low-ink, blurred or overlapping signature crops are retained for review but
+   excluded from matching, so stamp text cannot drive a signature match.
 4. OCR each usable stamp crop twice with different prompts. A personal name is
    eligible for enrollment only if both reads agree after case/title/punctuation
    normalization, it occurs in the transcribed stamp text, and the VLM identifies
@@ -86,7 +87,8 @@ not an execution error. The dashboard Sync button is equivalent to `src.pme.sync
    or full-page doctor guess is used to enroll a signature.
 5. Inspect both pages before enrollment. Conflicting names/multiple doctors or
    signatures that cannot be reliably compared require review. Select one best
-   evidence set; do not enroll duplicates from both pages or join an unpaired
+   evidence set for matching and retain both pages as review evidence; do not
+   enroll duplicates from both pages or join an unpaired
    stamp on one page to a signature on the other.
 6. Compare the signature to stored signatures using SIFT features, a strict
    nearest-neighbor ratio, RANSAC geometry and aligned ink overlap. Require at
@@ -111,9 +113,18 @@ Two agreeing reads from one model are consistency checks, not independent proof.
 - `data/processed/extractions/DOCUMENT_ID/record.json`: candidate fields plus a
   typed `doctor_recognition` object (status, name/ID, similarity, selected page,
   boxes, crop paths, OCR text, notes and algorithm version).
-- `doctor_signature.png` and `doctor_stamp.png` in that document directory: one
-  selected pair of crops. Paths are repository-relative for portability. A missing
-  crop is shown as unavailable; it is never substituted with another report's crop.
+- `doctor_evidence/page_0002/` and `doctor_evidence/page_0003/` within each
+  document directory contain `signature.png`, `stamp.png`, `combined.png` and
+  `annotated.png` whenever valid localized boxes are available. The full-page
+  annotation draws blue signature, orange stamp and green combined-region boxes.
+  The combined region is the union of valid signature/stamp boxes; if only one
+  exists it encloses that one region. Crops always use the unannotated source.
+  Coordinates are saved in normalized (0..1) and original-image pixel units with
+  source image dimensions and zero-based page index. Invalid boxes are neither
+  drawn nor saved. Paths are repository-relative; unavailable crops are never
+  substituted with another report's evidence. `doctor_recognition.evidence` lists
+  each inspected page; top-level paths point to the selected evidence set.
+  Evidence remains available on OCR failure, identity conflict or ambiguity.
 - `data/processed/doctors/registry.sqlite3`: canonical doctor name, normalized
   unique name key, original PNG signature and stamp blobs, source document and
   creation time. Lookup/enrollment is transactionally serialized. No paths to the
@@ -131,10 +142,14 @@ additional reference signatures must be reviewed before changing gallery rows.
 Changing the matching algorithm requires reevaluation of thresholds and gallery.
 
 The dashboard displays doctor name, signature/stamp crops, status and similarity,
+as well as expandable per-page full-image annotations and combined crops,
 plus all raw extracted fields. Existing identity, examination, vision and fitness
 panels remain. Import skips document/per-page diagnostic sidecars, preserves
 recognition metadata, and atomically refreshes a document's examination when its
-record changes. Candidates with missing roll numbers are not merged through a
+record changes, preserving examination and extraction-run IDs. Foreign-key
+checks are enabled on SQLite connections. Newly available roll numbers are saved;
+conflicting changes to established roll numbers fail with a review message and
+roll back the refresh instead of changing the candidate identity. Candidates with missing roll numbers are not merged through a
 NULL roll number. Resync after overwriting extractions to update all candidate
 panels; the evidence panel can already read the current record.
 
@@ -150,6 +165,7 @@ may display that OCR name, but does not enroll a signature.
 - `configs/doctor_recognition.yaml`: storage path and conservative matching/quality
   thresholds, validated before model loading.
 - `src/models/schemas.py`: backward-compatible typed doctor metadata contract.
+- `src/extraction/doctor_evidence.py`: deterministic crop/annotation generation.
 - `src/extraction/doctor_recognition.py`: localization, crop validation, OCR checks,
   image matching, persistence and safe abstention.
 - `src/extraction/run_extraction.py`: recognition in both extraction modes, strict
@@ -183,8 +199,11 @@ The pre-existing deleted `pme_database_layer/` files have been left untouched;
 its deletions are not part of the feature commit. The existing untracked frontend
 and database implementation were integrated into the feature's source files.
 
-Twelve CPU-only tests passed using synthetic images, temporary SQLite databases
-and fake VLM responses. Python compilation and whitespace checks passed.
+Twenty CPU-only tests passed using synthetic images, temporary SQLite databases
+and fake VLM responses. Tests also cover annotated-box coordinates, OCR failure,
+overlap retention, additive schema upgrades, stable IDs and rollback on identity
+conflicts. A synthetic annotation was visually inspected. Python compilation and
+whitespace checks passed.
 Dependency metadata was resolved with `uv lock`; packages/models were not installed
 or loaded for extraction. No extraction, training, real-report processing or GPU
 operations were executed in this environment.
@@ -199,3 +218,36 @@ review/unmatched results even for a known doctor. Initial automated enrollment c
 still inherit OCR/localization errors despite consistency checks. Validate gallery
 entries and measure matching thresholds on representative labeled held-out reports
 on the GPU system before treating automated names as authoritative.
+
+
+## Database upgrade for bounding-box evidence
+
+Run the same sync command after updating the code:
+
+```bash
+uv run python -m src.pme.sync
+```
+
+Startup/sync creates three additional tables if absent; existing tables and
+candidate rows are not dropped or altered:
+
+- `doctor_registry_links`: unique persistent gallery ID linked to a unique
+  dashboard doctor row. Display-name equality does not merge different gallery IDs.
+- `doctor_recognition_results`: one result per extraction run, with status,
+  similarity constrained to 0..1, algorithm, observed name, notes and optional
+  registered-doctor link.
+- `doctor_evidence`: per-page boxes (normalized and pixels), image dimensions,
+  crop/annotation paths, quality flags, stamp text and notes. A unique constraint
+  permits one evidence row per extraction run/page; page indices must be 2 or 3.
+
+This is an additive schema upgrade implemented by SQLAlchemy metadata creation,
+not an alteration of old columns. Sync backfills recognition results from existing
+record JSON, even when the candidate record itself has not changed. Older records
+without the new `evidence` list remain readable. Run extraction with `--overwrite`
+on your GPU machine to generate annotations/crops for those reports, then sync.
+The pipeline also attempts doctor evidence extraction when full-document field
+extraction fails, preserving a null-shaped field record and a failure exit code.
+
+New evidence is saved independently of identity recognition. Conflicting doctor
+names, multiple doctors, unusable signatures and OCR errors therefore retain the
+localized page images and bounding boxes for review instead of discarding them.

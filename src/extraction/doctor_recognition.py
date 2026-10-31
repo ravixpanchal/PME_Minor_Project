@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.extraction.vlm_extractor import _first_json_object, _pin_size
 from src.models.schemas import DoctorRecognition
+from src.extraction.doctor_evidence import save_evidence
 
 
 class RecognitionConfig(BaseModel):
@@ -216,7 +217,8 @@ class DoctorRecognizer:
         return result
 
     def process(self, document_id: str, pages: dict[int, Path], out_dir: Path):
-        candidates, errors = [], []
+        candidates, errors, evidence = [], [], []
+        multiple_doctors = False
         for idx in (2, 3):
             if idx not in pages:
                 continue
@@ -230,22 +232,32 @@ class DoctorRecognizer:
                     '"same_doctor": true or false, "multiple_doctors": true or false}. '
                     'Coordinates MUST be normalized 0..1 relative to the entire image. '
                     'Use tight boxes; signature box must exclude stamp text and printed lines. '
-                    'If stamp overlaps signature ink, set signature null. If uncertain set boxes null. '
+                    'Preserve both boxes even when stamp and signature overlap. If uncertain set boxes null. '
                     'same_doctor is true only when the stamp unambiguously belongs to that signature.')
-                if obj.get("multiple_doctors") is True:
-                    return DoctorRecognition(status="ambiguous", notes=["Multiple doctors on report"])
+                multiple_doctors |= obj.get("multiple_doctors") is True
                 sig, stamp = crop_box(image, obj.get("signature")), crop_box(image, obj.get("stamp"))
+                item = save_evidence(image, {"signature": sig, "stamp": stamp}, obj, idx, out_dir, self.root)
+                evidence.append(item)
+                item.same_doctor = obj.get("same_doctor") is True
+                item.signature_usable = sig is not None and usable(sig, self.cfg)
+                item.stamp_usable = stamp is not None and usable(stamp, self.cfg)
                 if sig is not None and stamp is not None:
                     x1, y1, x2, y2 = obj["signature"]
                     a1, b1, a2, b2 = obj["stamp"]
                     if min(x2, a2) > max(x1, a1) and min(y2, b2) > max(y1, b1):
-                        sig = None
-                if sig is not None and not usable(sig, self.cfg):
-                    sig = None
-                if stamp is not None and not usable(stamp, self.cfg):
-                    stamp = None
+                        item.signature_usable = False
+                        item.notes.append("Overlapping stamp/signature retained for review; excluded from matching")
+                if sig is not None and not item.signature_usable:
+                    item.notes.append("Signature is not suitable for automatic matching")
+                if stamp is not None and not item.stamp_usable:
+                    item.notes.append("Stamp is not suitable for OCR/enrollment")
+                # OCR failure must never discard crops or the signature candidate.
+                candidate = dict(idx=idx, signature=sig if item.signature_usable else None,
+                                 stamp=stamp if item.stamp_usable else None, name=None, text=None,
+                                 paired=item.same_doctor, boxes=item.boxes, evidence=item)
+                candidates.append(candidate)
                 name, text = None, None
-                if stamp is not None:
+                if item.stamp_usable:
                     first = self.ask_json(stamp,
                         'OCR this doctor stamp. Return {"text": "verbatim visible stamp text", '
                         '"doctor_name": "full personal name" or null}. Do not infer missing letters '
@@ -257,35 +269,37 @@ class DoctorRecognizer:
                     text = first.get("text")
                     if a and b and name_key(a) == name_key(b) and isinstance(text, str) and name_key(a) in name_key(text):
                         name = a
-                candidates.append(dict(idx=idx, signature=sig, stamp=stamp, name=name,
-                                       text=text, paired=obj.get("same_doctor") is True,
-                                       boxes={"signature": obj.get("signature"), "stamp": obj.get("stamp")}))
+                item.doctor_name = name
+                item.stamp_text = text if isinstance(text, str) else None
+                candidate.update(name=name, text=item.stamp_text)
             except Exception as exc:
                 errors.append(f"Page {idx+1}: {type(exc).__name__}: {exc}")
         names = {name_key(c["name"]) for c in candidates if c["name"]}
-        if len(names) > 1:
-            return DoctorRecognition(status="identity_conflict", notes=errors+["Stamp names disagree across pages"])
-        # Inspect both pages, but persist only one best evidence set.
         candidates.sort(key=lambda c: (c["signature"] is not None,
-                                      bool(c["name"] and c["paired"]), c["stamp"] is not None), reverse=True)
+                                      bool(c["name"] and c["paired"]),
+                                      bool(c["evidence"].signature_path),
+                                      bool(c["evidence"].stamp_path)), reverse=True)
         if not candidates:
-            return DoctorRecognition(status="error" if errors else "missing", notes=errors)
+            return DoctorRecognition(status="error" if errors else "missing", notes=errors, evidence=evidence)
         best = candidates[0]
         result = DoctorRecognition(status="missing_signature", doctor_name=best["name"])
         signatures = [c for c in candidates if c["signature"] is not None]
-        if len(signatures) == 2 and similarity(signatures[0]["signature"], signatures[1]["signature"], self.cfg) < self.cfg.similarity_threshold:
+        if multiple_doctors:
+            result = DoctorRecognition(status="ambiguous", notes=["Multiple doctors on report"])
+        elif len(names) > 1:
+            result = DoctorRecognition(status="identity_conflict", notes=["Stamp names disagree across pages"])
+        elif len(signatures) == 2 and similarity(signatures[0]["signature"], signatures[1]["signature"], self.cfg) < self.cfg.similarity_threshold:
             result = DoctorRecognition(status="needs_review", notes=["Page 3/4 signatures disagree or cannot be reliably compared"])
         elif best["signature"] is not None:
-            result = self.registry.identify(best["signature"], best["stamp"] if best["paired"] else None,
-                                            best["name"] if best["paired"] else None, document_id)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for kind in ("signature", "stamp"):
-            if best[kind] is not None:
-                path = out_dir / f"doctor_{kind}.png"
-                best[kind].save(path)
-                setattr(result, f"{kind}_path", path.relative_to(self.root).as_posix())
-        result.page_index = best["idx"]
-        result.boxes = best["boxes"]
-        result.stamp_text = best["text"] if isinstance(best["text"], str) else None
+            # Check any readable stamp name for contradictions, even if unpaired.
+            observed_name = next((c["name"] for c in candidates if c["name"]), None)
+            result = self.registry.identify(best["signature"], best["stamp"] if best["paired"] and best["name"] else None,
+                                            observed_name, document_id)
+        elif best["evidence"].signature_path:
+            result = DoctorRecognition(status="needs_review", notes=["Signature extracted but unsuitable for matching"])
+        selected = best["evidence"]
+        for field in ("signature_path", "stamp_path", "combined_path", "annotated_path", "page_index", "boxes", "stamp_text"):
+            setattr(result, field, getattr(selected, field))
+        result.evidence = evidence
         result.notes.extend(errors)
         return result

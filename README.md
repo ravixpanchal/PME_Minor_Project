@@ -1,7 +1,8 @@
 # Medical report extraction
 
 Four-page candidate report extraction with a Streamlit dashboard and a persistent
-doctor signature/stamp gallery. See [the GPU runbook and change inventory](docs/doctor-recognition.md)
+doctor signature/stamp gallery. Extraction saves signature/stamp crops, a combined
+region crop and full-page bounding-box annotations for report pages 3 and 4. See [the GPU runbook and change inventory](docs/doctor-recognition.md)
 for setup, commands, recognition decisions, limitations and validation results.
 
 ```bash

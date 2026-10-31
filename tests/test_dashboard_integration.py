@@ -55,3 +55,90 @@ def test_dashboard_fields_in_extraction_schema():
         assert f'page_3_fitness_classification.{suffix}' in paths
     for suffix in ('email', 'mobile_number', 'declaration_date'):
         assert f'page_4_declarations.{suffix}' in paths
+
+
+def test_additive_schema_upgrade_and_evidence_refresh(tmp_path):
+    from sqlalchemy import inspect
+    from src.pme.models import DoctorEvidence, DoctorRecognitionResult, DoctorRegistryLink
+    engine = create_engine('sqlite:///:memory:')
+    # Simulate the old schema with populated candidates and no new tables.
+    old_tables = [table for table in Base.metadata.sorted_tables
+                  if table.name not in {'doctor_registry_links','doctor_recognition_results','doctor_evidence'}]
+    Base.metadata.create_all(engine, tables=old_tables)
+    with Session(engine) as session:
+        session.add(Candidate(candidate_name='EXISTING'))
+        session.commit()
+    Base.metadata.create_all(engine)
+    assert 'doctor_evidence' in inspect(engine).get_table_names()
+    data = record()
+    data['doctor_recognition'].update(doctor_id='registry-id', evidence=[{
+        'page_index':2, 'image_width':1000, 'image_height':600,
+        'boxes':{'signature':[.1,.1,.3,.3]},
+        'boxes_pixels':{'signature':[100,60,300,180]},
+        'signature_path':'data/processed/doc/signature.png',
+        'annotated_path':'data/processed/doc/annotated.png',
+        'signature_usable':True,
+    }])
+    target = tmp_path/'record.json'
+    target.write_text(json.dumps(data))
+    with Session(engine) as session:
+        assert import_directory(session,tmp_path) == (1,0)
+        run = session.scalar(select(ExtractionRun))
+        run_id, exam_id = run.id, run.examination_id
+        assert session.get(DoctorRegistryLink,'registry-id').doctor_id == run.examination.examining_doctor_id
+        assert session.get(DoctorRecognitionResult,run_id).status == 'registered'
+        assert session.scalar(select(DoctorEvidence)).boxes_pixels['signature'] == [100,60,300,180]
+        data['doctor_recognition']['evidence'][0]['page_index'] = 3
+        data['fields']['page_3_fitness_classification']['bp'] = '110/70'
+        target.write_text(json.dumps(data))
+        assert import_directory(session,tmp_path) == (1,0)
+        run = session.scalar(select(ExtractionRun))
+        assert (run.id,run.examination_id) == (run_id,exam_id)
+        assert len(list(session.scalars(select(DoctorEvidence)))) == 1
+        assert session.scalar(select(DoctorEvidence)).page_index == 3
+        assert session.scalar(select(Candidate).where(Candidate.candidate_name=='EXISTING'))
+        assert import_directory(session,tmp_path) == (1,0)
+
+
+def test_identity_roll_conflict_rolls_back_existing_record(tmp_path):
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    target = tmp_path/'record.json'
+    original = record()
+    target.write_text(json.dumps(original))
+    with Session(engine) as session:
+        assert import_directory(session,tmp_path) == (1,0)
+        run = session.scalar(select(ExtractionRun))
+        exam_id = run.examination_id
+        # A previously missing roll number can be filled in.
+        original['fields']['page_1_basic_info']['narrative_details'] = {'roll_number':'ROLL1'}
+        target.write_text(json.dumps(original))
+        assert import_directory(session,tmp_path) == (1,0)
+        assert session.scalar(select(Candidate)).roll_number == 'ROLL1'
+        # A conflicting correction must not partially delete the old clinical data.
+        original['fields']['page_1_basic_info']['narrative_details']['roll_number'] = 'ROLL2'
+        target.write_text(json.dumps(original))
+        assert import_directory(session,tmp_path) == (0,1)
+        run = session.scalar(select(ExtractionRun))
+        assert run.examination_id == exam_id
+        assert run.examination.physical.bp == '120/80'
+        assert session.scalar(select(Candidate)).roll_number == 'ROLL1'
+
+
+def test_distinct_registry_ids_with_same_name_are_not_merged(tmp_path):
+    from src.pme.models import DoctorRegistryLink
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    first = record()
+    first['doctor_recognition']['doctor_id'] = 'doctor-one'
+    second = record('OTHER CANDIDATE')
+    second['document_id'] = 'doc2'
+    second['doctor_recognition']['doctor_id'] = 'doctor-two'
+    (tmp_path/'first.json').write_text(json.dumps(first))
+    (tmp_path/'second.json').write_text(json.dumps(second))
+    with Session(engine) as session:
+        assert import_directory(session,tmp_path) == (2,0)
+        a = session.get(DoctorRegistryLink,'doctor-one')
+        b = session.get(DoctorRegistryLink,'doctor-two')
+        assert a.doctor_id != b.doctor_id
+        assert a.doctor.doctor_name == b.doctor.doctor_name

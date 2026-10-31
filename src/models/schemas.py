@@ -128,6 +128,36 @@ class ProvenanceEntry(BaseModel):
     raw_value: str = ""
 
 
+class DoctorPageEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    page_index: int = Field(ge=2, le=3)
+    image_width: int = Field(gt=0)
+    image_height: int = Field(gt=0)
+    boxes: Dict[str, List[float]] = Field(default_factory=dict)
+    boxes_pixels: Dict[str, List[int]] = Field(default_factory=dict)
+    signature_path: Optional[str] = None
+    stamp_path: Optional[str] = None
+    combined_path: Optional[str] = None
+    annotated_path: Optional[str] = None
+    signature_usable: bool = False
+    stamp_usable: bool = False
+    same_doctor: bool = False
+    stamp_text: Optional[str] = None
+    doctor_name: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+    @field_validator("boxes")
+    @classmethod
+    def validate_boxes(cls, value):
+        import math
+        for kind, box in value.items():
+            if kind not in {"signature", "stamp", "combined"} or len(box) != 4:
+                raise ValueError("Invalid evidence bounding box")
+            if not all(math.isfinite(v) for v in box) or not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1):
+                raise ValueError("Evidence boxes must be normalized and ordered")
+        return value
+
+
 class DoctorRecognition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["missing", "missing_signature", "unmatched", "matched", "registered",
@@ -142,6 +172,9 @@ class DoctorRecognition(BaseModel):
     boxes: Dict[str, Any] = Field(default_factory=dict)
     notes: List[str] = Field(default_factory=list)
     algorithm: str = "sift-ransac-ink-v1"
+    evidence: List[DoctorPageEvidence] = Field(default_factory=list)
+    annotated_path: Optional[str] = None
+    combined_path: Optional[str] = None
 
 
 class ExtractionRecord(BaseModel):
