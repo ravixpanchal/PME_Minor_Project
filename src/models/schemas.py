@@ -1,4 +1,3 @@
-# Phase: shared model contracts | Input: pipeline payloads | Output: validated Pydantic records | Command: ``uv run pytest tests/test_pme.py -q``.
 """Pydantic models for all data contracts.
 
 Invalid config or data = pipeline halts at load/insert time.
@@ -129,6 +128,55 @@ class ProvenanceEntry(BaseModel):
     raw_value: str = ""
 
 
+class DoctorPageEvidence(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    page_index: int = Field(ge=2, le=3)
+    image_width: int = Field(gt=0)
+    image_height: int = Field(gt=0)
+    boxes: Dict[str, List[float]] = Field(default_factory=dict)
+    boxes_pixels: Dict[str, List[int]] = Field(default_factory=dict)
+    signature_path: Optional[str] = None
+    stamp_path: Optional[str] = None
+    combined_path: Optional[str] = None
+    annotated_path: Optional[str] = None
+    signature_usable: bool = False
+    stamp_usable: bool = False
+    same_doctor: bool = False
+    stamp_text: Optional[str] = None
+    doctor_name: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+    @field_validator("boxes")
+    @classmethod
+    def validate_boxes(cls, value):
+        import math
+        for kind, box in value.items():
+            if kind not in {"signature", "stamp", "combined"} or len(box) != 4:
+                raise ValueError("Invalid evidence bounding box")
+            if not all(math.isfinite(v) for v in box) or not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1):
+                raise ValueError("Evidence boxes must be normalized and ordered")
+        return value
+
+
+class DoctorRecognition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["missing", "missing_signature", "unmatched", "matched", "registered",
+                    "ambiguous", "identity_conflict", "needs_review", "error"] = "missing"
+    doctor_id: Optional[str] = None
+    doctor_name: Optional[str] = None
+    confidence: float = Field(default=0, ge=0, le=1)
+    signature_path: Optional[str] = None
+    stamp_path: Optional[str] = None
+    stamp_text: Optional[str] = None
+    page_index: Optional[int] = Field(default=None, ge=2, le=3)
+    boxes: Dict[str, Any] = Field(default_factory=dict)
+    notes: List[str] = Field(default_factory=list)
+    algorithm: str = "sift-ransac-ink-v1"
+    evidence: List[DoctorPageEvidence] = Field(default_factory=list)
+    annotated_path: Optional[str] = None
+    combined_path: Optional[str] = None
+
+
 class ExtractionRecord(BaseModel):
     """Document-level merged extraction (the Group 2 output contract).
     v2: `fields` is NESTED — mirrors the schema tree; leaves are str|null."""
@@ -136,6 +184,7 @@ class ExtractionRecord(BaseModel):
     document_id: str
     model: str
     fields: Dict[str, Any]
+    doctor_recognition: Optional[DoctorRecognition] = None
     provenance: Dict[str, ProvenanceEntry] = Field(default_factory=dict)
     conflicts: List[str] = Field(default_factory=list)  # fields with >1 value across pages
     pages_covered: List[int] = Field(default_factory=list)

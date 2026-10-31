@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import os
+import json
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -252,6 +253,46 @@ def show_candidate(candidate: Candidate) -> None:
             kv("Declaration date", examination.candidate_declaration_date)
             kv("Doctor", examination.examining_doctor.doctor_name if examination.examining_doctor else None)
             st.markdown("</div>", unsafe_allow_html=True)
+
+        st.subheader("Doctor signature and stamp")
+        runs = examination.extraction_runs
+        payload = max(runs, key=lambda run: run.id).raw_json if runs else {}
+        # Prefer current extraction so overwrites are visible before database sync.
+        from src.database.config import get_extraction_dir
+        record_path = get_extraction_dir() / (document_id or "") / "record.json"
+        if record_path.is_file():
+            try:
+                payload = json.loads(record_path.read_text())
+            except (OSError, ValueError):
+                st.warning("Current extraction file could not be read.")
+        doctor = payload.get("doctor_recognition") or {}
+        kv("Recognized doctor", doctor.get("doctor_name"))
+        kv("Signature matching status", doctor.get("status", "Not processed"))
+        st.caption(f"Signature similarity: {doctor.get('confidence', 0):.1%} (not an identity probability)")
+        for col, kind in zip(st.columns(2), ("signature", "stamp")):
+            with col:
+                relative = doctor.get(f"{kind}_path")
+                path = (REPO_DIR / relative).resolve() if relative else None
+                if path and path.is_relative_to((REPO_DIR / "data").resolve()) and path.is_file():
+                    st.image(str(path), caption=f"Doctor {kind}")
+                else:
+                    st.info(f"Doctor {kind} unavailable")
+        for evidence in doctor.get("evidence", []):
+            with st.expander(f"Doctor evidence — report page {evidence['page_index'] + 1}"):
+                for kind, label in (("annotated", "Original page with bounding boxes"),
+                                    ("combined", "Stamp and signature region")):
+                    relative = evidence.get(f"{kind}_path")
+                    path = (REPO_DIR / relative).resolve() if relative else None
+                    if path and path.is_relative_to((REPO_DIR / "data").resolve()) and path.is_file():
+                        st.image(str(path), caption=label, use_container_width=True)
+                st.caption("Blue: signature · Orange: stamp · Green: combined region")
+                st.caption(f"Suitable for signature matching: {evidence.get('signature_usable', False)}")
+                if evidence.get("notes"):
+                    st.caption("; ".join(evidence["notes"]))
+        if doctor.get("notes"):
+            st.caption("; ".join(doctor["notes"]))
+        with st.expander("All extracted fields"):
+            st.json(payload.get("fields", {}))
 
         pme, vision = st.columns(2)
         with pme:

@@ -135,17 +135,31 @@ def test_scorer_taxonomy_nested():
 
 
 def _first_doc():
-    df = pd.read_parquet(config.get_path("manifest_file"))
-    doc = str(df["document_id"].iloc[0])
+    doc = "a" * 64
+    df = pd.DataFrame([dict(document_id=doc, page_index=i, person_index=0,
+        high_res_raw_path=f"data/interim/high_res/{doc}/page_{i:04d}.png",
+        vlm_res_path=f"data/interim/vlm_res/{doc}/page_{i:04d}.png") for i in range(4)])
     return doc, df
 
 
 def _redirect_outputs(monkeypatch, tmp_path):
+    # Fully fake orchestration: no reports, OCR, model, GPU or real gallery.
+    from src.extraction import run_extraction as rx
+    from src.models.schemas import DoctorRecognition
     real_get_path = config.get_path
-    monkeypatch.setattr(
-        config, "get_path",
-        lambda key: (tmp_path / "processed" if key == "processed_dir"
-                     else real_get_path(key)))
+    manifest = tmp_path / "manifest.parquet"
+    manifest.touch()
+    monkeypatch.setattr(config, "get_path", lambda key:
+        tmp_path / "processed" if key == "processed_dir" else
+        manifest if key == "manifest_file" else real_get_path(key))
+    monkeypatch.setattr(rx.pd, "read_parquet", lambda path: _first_doc()[1])
+    monkeypatch.setattr(rx, "_resolve", lambda row, source: config.root_dir / row["vlm_res_path"])
+    class FakeRecognizer:
+        def __init__(self, *args):
+            pass
+        def process(self, *args):
+            return DoctorRecognition(status="missing")
+    monkeypatch.setattr(rx, "DoctorRecognizer", FakeRecognizer)
 
 
 def _run_runner(monkeypatch, argv):

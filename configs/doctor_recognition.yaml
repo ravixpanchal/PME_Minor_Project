@@ -1,0 +1,7 @@
+# Conservative initial values. Calibrate on labeled, held-out real signatures.
+registry_dir: data/processed/doctors
+similarity_threshold: 0.90
+ambiguity_margin: 0.10
+min_inliers: 18
+min_ink_pixels: 100
+min_sharpness: 12

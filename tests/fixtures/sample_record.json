@@ -1,0 +1,68 @@
+{
+  "document_id": "synthetic-schema-fixture",
+  "fields": {
+    "page_1_basic_info": {
+      "general_details": {
+        "candidate_name": "SYNTHETIC CANDIDATE"
+      },
+      "narrative_details": {
+        "roll_number": "TEST-ROLL-001"
+      }
+    },
+    "page_2_medical_metrics": {
+      "pme_case": {
+        "urine": "SUGAR"
+      }
+    },
+    "page_4_declarations": {
+      "part_one": [
+        {
+          "question_no": "0",
+          "answer": "false"
+        },
+        {
+          "question_no": "1",
+          "answer": "false"
+        },
+        {
+          "question_no": "2",
+          "answer": "false"
+        },
+        {
+          "question_no": "3",
+          "answer": "false"
+        },
+        {
+          "question_no": "4",
+          "answer": "false"
+        }
+      ],
+      "part_two": [
+        {
+          "question_no": "0",
+          "answer": "false"
+        },
+        {
+          "question_no": "1",
+          "answer": "false"
+        },
+        {
+          "question_no": "2",
+          "answer": "false"
+        },
+        {
+          "question_no": "3",
+          "answer": "false"
+        },
+        {
+          "question_no": "4",
+          "answer": "false"
+        },
+        {
+          "question_no": "5",
+          "answer": "false"
+        }
+      ]
+    }
+  }
+}

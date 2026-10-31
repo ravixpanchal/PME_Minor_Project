@@ -37,6 +37,7 @@ data/stages/*
 *.csv
 *.parquet
 *.json
+!tests/fixtures/*.json
 *.feather
 
 # Test & Coverage Outputs
@@ -61,4 +62,5 @@ htmlcov/
 *.log
 docker/*.log
 
-.db
+*.db
+*.sqlite3

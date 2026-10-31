@@ -1,3 +1,22 @@
+## Doctor signature and stamp extraction
+
+This version integrates the `3aryan8/pme_database` main branch with persistent
+doctor recognition, per-page signature/stamp crops, combined-region crops and
+full-page bounding-box annotations. The current dashboard and normalized
+`src/database` package display/store this evidence.
+
+```bash
+uv sync --extra vlm --group dev
+# On the GPU machine, after configuring PDF sources and split boundaries:
+uv run --extra vlm python -m pipelines.run_all
+# Re-extract previously processed reports to add bounding boxes:
+uv run --extra vlm python -m src.extraction.run_extraction --overwrite
+uv run python -m src.database.run_database
+uv run streamlit run frontend/app.py
+```
+
+See [doctor recognition setup, database upgrades and validation](docs/doctor-recognition.md).
+
 # Offline Medical Report Digitization & Query System
 
 A local, modular, and reproducible Document-AI pipeline for converting scanned multi-page medical examination reports into structured, queryable, and traceable records.

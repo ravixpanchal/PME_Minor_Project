@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from src.models.schemas import DoctorRecognition
 
 
 # ============================================================
@@ -357,6 +358,8 @@ class Page4(BaseModel):
     declaration_date: date | None = None
 
     doctor_name: str | None = None
+    mobile_number: str | None = None
+    email: str | None = None
 
     @field_validator(
         "declaration_date",
@@ -424,6 +427,7 @@ class PMEExtraction(BaseModel):
     # --------------------------------------------------------
 
     fields: dict[str, Any]
+    doctor_recognition: DoctorRecognition | None = None
 
     # --------------------------------------------------------
     # Extraction metadata

@@ -10,8 +10,8 @@ SAMPLE = Path(__file__).parent / "fixtures" / "sample_record.json"
 
 def test_sample_json():
     d=PMEExtraction.from_file(SAMPLE)
-    assert d.page1.general_details.candidate_name == "AJAY SINGH"
-    assert d.page1.narrative_details.roll_number == "116244151979348"
+    assert d.page1.general_details.candidate_name == "SYNTHETIC CANDIDATE"
+    assert d.page1.narrative_details.roll_number == "TEST-ROLL-001"
     assert d.page2.pme_case.urine == "SUGAR"
     assert len(d.page4.part_one) == 5
     assert len(d.page4.part_two) == 6

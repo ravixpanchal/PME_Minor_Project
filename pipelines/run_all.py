@@ -45,11 +45,11 @@ def stages(
             [
                 (
                     "detection: VLM region detection",
-                    ["uv", "run", "python", "-m", "src.detection.run_detection"],
+                    ["uv", "run", "--extra", "vlm", "python", "-m", "src.detection.run_detection"],
                 ),
                 (
-                    "extraction: VLM field extraction",
-                    ["uv", "run", "python", "-m", "src.extraction.run_extraction"],
+                    "extraction: VLM fields and doctor signature/stamp evidence",
+                    ["uv", "run", "--extra", "vlm", "python", "-m", "src.extraction.run_extraction"],
                 ),
             ]
         )

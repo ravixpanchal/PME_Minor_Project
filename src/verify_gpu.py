@@ -1,4 +1,3 @@
-# Phase: environment verification | Input: NVIDIA runtime and torch installation | Output: GPU availability status | Command: ``uv run python src/verify_gpu.py``.
 """GPU verification for Group 1.
 
 Checks: (1) NVIDIA driver + container-toolkit passthrough (nvidia-smi works
@@ -38,7 +37,11 @@ def main() -> int:
     except ImportError:
         print("\nDEFERRED: PyTorch not installed (intentional for Group 1).")
         print("          CUDA-runtime check happens at Group 2 / vLLM bring-up.")
-        return 0
+        return 1
+
+    if not torch.cuda.is_available():
+        print(f"FAIL: torch {torch.__version__} cannot access CUDA. Install a compatible CUDA build.")
+        return 1
 
     print(f"\nPASS: torch {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
     if torch.cuda.is_available():

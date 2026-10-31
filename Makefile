@@ -22,6 +22,6 @@ gpu:
 	$(COMPOSE_GPU) run --rm foundation $(CMD)
 
 clean:
-	find data/interim data/metadata data/processed -type f ! -name '.gitkeep' -delete
+	find data/interim data/metadata data/processed -type f ! -path 'data/processed/doctors/*' ! -name '.gitkeep' -delete
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
