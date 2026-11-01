@@ -79,7 +79,7 @@ def test_additive_schema_upgrade_and_evidence_refresh(tmp_path):
     engine = create_engine('sqlite:///:memory:')
     # Simulate the old schema with populated candidates and no new tables.
     old_tables = [table for table in Base.metadata.sorted_tables
-                  if table.name not in {'doctor_registry_links','doctor_recognition_results','doctor_evidence'}]
+                  if table.name not in {'doctor_registry_links','doctor_recognition_results','doctor_evidence','doctor_signature_isolation'}]
     Base.metadata.create_all(engine, tables=old_tables)
     with Session(engine) as session:
         session.add(Candidate(candidate_name='EXISTING'))
@@ -94,6 +94,8 @@ def test_additive_schema_upgrade_and_evidence_refresh(tmp_path):
         'signature_path':'data/processed/doc/signature.png',
         'annotated_path':'data/processed/doc/annotated.png',
         'signature_usable':True,
+        'signature_matching_path':'data/processed/doc/signature_matching.png',
+        'signature_isolation_complete':True,
     }])
     target = tmp_path/'record.json'
     target.write_text(json.dumps(data))
@@ -104,6 +106,9 @@ def test_additive_schema_upgrade_and_evidence_refresh(tmp_path):
         assert session.get(DoctorRegistryLink,'registry-id').doctor_id == run.examination.examining_doctor_id
         assert session.get(DoctorRecognitionResult,run_id).status == 'registered'
         assert session.scalar(select(DoctorEvidence)).boxes_pixels['signature'] == [100,60,300,180]
+        isolated = session.scalar(select(DoctorEvidence)).isolation.payload
+        assert isolated['signature_matching_path'] == 'data/processed/doc/signature_matching.png'
+        assert isolated['signature_isolation_complete'] is True
         data['doctor_recognition']['evidence'][0]['page_index'] = 3
         data['fields']['page_3_fitness_classification']['bp'] = '110/70'
         target.write_text(json.dumps(data))

@@ -315,8 +315,18 @@ class DoctorEvidence(Base):
     doctor_name: Mapped[str | None] = mapped_column(String(200))
     notes: Mapped[list] = mapped_column(JSON, nullable=False)
     recognition: Mapped[DoctorRecognitionResult] = relationship(back_populates="evidence")
+    isolation: Mapped["DoctorSignatureIsolation | None"] = relationship(
+        back_populates="evidence", uselist=False, cascade="all, delete-orphan")
     __table_args__ = (
         UniqueConstraint("extraction_run_id", "page_index", name="uq_doctor_evidence_page"),
         CheckConstraint("page_index IN (2, 3)", name="ck_doctor_evidence_page"),
         CheckConstraint("image_width > 0 AND image_height > 0", name="ck_doctor_evidence_size"),
     )
+
+
+class DoctorSignatureIsolation(Base):
+    """Additive matching-asset metadata; original evidence columns stay unchanged."""
+    __tablename__ = "doctor_signature_isolation"
+    evidence_id: Mapped[int] = mapped_column(ForeignKey("doctor_evidence.id"), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence: Mapped[DoctorEvidence] = relationship(back_populates="isolation")

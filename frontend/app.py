@@ -268,6 +268,7 @@ def show_candidate(candidate: Candidate) -> None:
                 st.warning("Current extraction file could not be read.")
         doctor = payload.get("doctor_recognition") or {}
         kv("Recognized doctor", doctor.get("doctor_name"))
+        kv("Name read from stamp", doctor.get("stamp_doctor_name"))
         kv("Signature matching status", doctor.get("status", "Not processed"))
         st.caption(f"Signature similarity: {doctor.get('confidence', 0):.1%} (not an identity probability)")
         for col, kind in zip(st.columns(2), ("signature", "stamp")):
@@ -286,6 +287,13 @@ def show_candidate(candidate: Candidate) -> None:
                     path = (REPO_DIR / relative).resolve() if relative else None
                     if path and path.is_relative_to((REPO_DIR / "data").resolve()) and path.is_file():
                         st.image(str(path), caption=label, width="stretch")
+                for kind, label in (("signature_matching", "Signature used for matching (printed regions masked)"),
+                                    ("signature_mask", "Matching mask: white retained, black excluded")):
+                    relative = evidence.get(f"{kind}_path")
+                    path = (REPO_DIR / relative).resolve() if relative else None
+                    if path and path.is_relative_to((REPO_DIR / "data").resolve()) and path.is_file():
+                        st.image(str(path), caption=label, width="stretch")
+                kv("Name read from this stamp", evidence.get("doctor_name"))
                 st.caption("Blue: signature · Orange: stamp · Green: combined region")
                 st.caption(f"Suitable for signature matching: {evidence.get('signature_usable', False)}")
                 if evidence.get("notes"):

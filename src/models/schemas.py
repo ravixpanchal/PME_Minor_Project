@@ -139,6 +139,11 @@ class DoctorPageEvidence(BaseModel):
     stamp_path: Optional[str] = None
     combined_path: Optional[str] = None
     annotated_path: Optional[str] = None
+    signature_matching_path: Optional[str] = None
+    signature_mask_path: Optional[str] = None
+    signature_text_boxes: List[List[float]] = Field(default_factory=list)
+    signature_isolation_complete: bool = False
+    signature_retained_ink_ratio: float = Field(default=0, ge=0, le=1)
     signature_usable: bool = False
     stamp_usable: bool = False
     same_doctor: bool = False
@@ -171,7 +176,8 @@ class DoctorRecognition(BaseModel):
     page_index: Optional[int] = Field(default=None, ge=2, le=3)
     boxes: Dict[str, Any] = Field(default_factory=dict)
     notes: List[str] = Field(default_factory=list)
-    algorithm: str = "sift-ransac-ink-v1"
+    stamp_doctor_name: Optional[str] = None
+    algorithm: str = "sift-ransac-masked-v2"
     evidence: List[DoctorPageEvidence] = Field(default_factory=list)
     annotated_path: Optional[str] = None
     combined_path: Optional[str] = None

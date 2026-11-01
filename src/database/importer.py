@@ -12,6 +12,7 @@ from .models import (
     Declaration,
     Doctor,
     DoctorEvidence,
+    DoctorSignatureIsolation,
     DoctorRecognitionResult,
     DoctorRegistryLink,
     ExtractionRun,
@@ -94,10 +95,17 @@ def store_doctor_result(session, run, recognition):
     result = DoctorRecognitionResult(
         registry_id=identity.registry_id if identity else None,
         status=recognition.status, similarity=recognition.confidence,
-        algorithm=recognition.algorithm, observed_name=recognition.doctor_name,
+        algorithm=recognition.algorithm, observed_name=recognition.stamp_doctor_name or recognition.doctor_name,
         notes=recognition.notes)
     run.doctor_result = result
-    result.evidence = [DoctorEvidence(**item.model_dump()) for item in recognition.evidence]
+    isolation_fields = {"signature_matching_path", "signature_mask_path", "signature_text_boxes",
+                        "signature_isolation_complete", "signature_retained_ink_ratio"}
+    for item in recognition.evidence:
+        payload = item.model_dump()
+        isolated = {key: payload.pop(key) for key in isolation_fields}
+        evidence = DoctorEvidence(**payload)
+        evidence.isolation = DoctorSignatureIsolation(payload=isolated)
+        result.evidence.append(evidence)
     session.flush()
 
 

@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.extraction.vlm_extractor import _first_json_object, _pin_size
 from src.models.schemas import DoctorRecognition
 from src.extraction.doctor_evidence import save_evidence
+from src.extraction.signature_isolation import isolate_signature, overlapping_stamp
 from src.utils.logger import setup_logger
 
 log = setup_logger("doctor_recognition")
@@ -39,7 +40,7 @@ class RecognitionConfig(BaseModel):
 
 
 def name_key(name: str | None) -> str:
-    text = re.sub(r"^\s*(?:dr\.?|doctor)\s+", "", name or "", flags=re.I)
+    text = re.sub(r"^\s*(?:dr\.\s*|dr\s+|doctor\s+)", "", name or "", flags=re.I)
     return " ".join(re.findall(r"[^\W\d_]+", text.casefold(), flags=re.UNICODE))
 
 
@@ -74,20 +75,25 @@ def crop_box(image: Image.Image, box: object) -> Image.Image | None:
     return image.crop(bounds)
 
 
-def normalize(image: Image.Image) -> np.ndarray:
+def normalize(image: Image.Image, return_mask=False) -> np.ndarray:
     gray = np.asarray(image.convert("L"))
+    allowed = np.asarray(image.getchannel("A")) if image.mode == "RGBA" else np.full(gray.shape,255,np.uint8)
     _, ink = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     points = cv2.findNonZero(ink)
     if points is None:
-        return np.zeros((256, 512), np.uint8)
+        empty = np.zeros((256,512),np.uint8)
+        return (empty, np.zeros_like(empty)) if return_mask else empty
     x, y, w, h = cv2.boundingRect(points)
     ink = ink[y:y+h, x:x+w]
+    allowed = allowed[y:y+h,x:x+w]
     ratio = min(480/w, 224/h)
     ink = cv2.resize(ink, (max(1, round(w*ratio)), max(1, round(h*ratio))))
     canvas = np.zeros((256, 512), np.uint8)
     top, left = (256-ink.shape[0])//2, (512-ink.shape[1])//2
     canvas[top:top+ink.shape[0], left:left+ink.shape[1]] = ink
-    return canvas
+    mask = np.full(canvas.shape,255,np.uint8)
+    mask[top:top+ink.shape[0],left:left+ink.shape[1]] = cv2.resize(allowed,(ink.shape[1],ink.shape[0]),interpolation=cv2.INTER_NEAREST)
+    return (canvas,mask) if return_mask else canvas
 
 
 def usable(image: Image.Image, cfg: RecognitionConfig) -> bool:
@@ -104,10 +110,11 @@ def similarity(a: Image.Image, b: Image.Image, cfg: RecognitionConfig) -> float:
     Generic stamp text must never be part of a signature crop. Reject weak
     geometry, small feature clusters and implausible scale/rotation changes.
     """
-    a, b = normalize(a), normalize(b)
+    a, mask_a = normalize(a, return_mask=True)
+    b, mask_b = normalize(b, return_mask=True)
     sift = cv2.SIFT_create(nfeatures=800)
-    ka, da = sift.detectAndCompute(a, None)
-    kb, db = sift.detectAndCompute(b, None)
+    ka, da = sift.detectAndCompute(a, cv2.erode(mask_a,np.ones((25,25),np.uint8)))
+    kb, db = sift.detectAndCompute(b, cv2.erode(mask_b,np.ones((25,25),np.uint8)))
     if da is None or db is None:
         return 0.0
     pairs = cv2.BFMatcher().knnMatch(da, db, k=2)
@@ -134,6 +141,11 @@ def similarity(a: Image.Image, b: Image.Image, cfg: RecognitionConfig) -> float:
             return 0.0
     warped = cv2.warpAffine(a, matrix, (512, 256)) > 100
     target = b > 100
+    common = (cv2.warpAffine(mask_a,matrix,(512,256),flags=cv2.INTER_NEAREST) > 250) & (mask_b > 250)
+    if (warped & common).sum() < .5*max(1,warped.sum()) or (target & common).sum() < .5*max(1,target.sum()):
+        return 0.0
+    warped &= common
+    target &= common
     kernel = np.ones((3, 3), np.uint8)
     aw = cv2.dilate(warped.astype(np.uint8), kernel).astype(bool)
     bw = cv2.dilate(target.astype(np.uint8), kernel).astype(bool)
@@ -152,12 +164,17 @@ class DoctorRegistry:
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT UNIQUE NOT NULL,
                     signature BLOB NOT NULL, stamp BLOB NOT NULL, source_document TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS signature_templates (
+                    doctor_id TEXT PRIMARY KEY REFERENCES doctors(id),
+                    algorithm TEXT NOT NULL, matching_signature BLOB NOT NULL,
+                    source_document TEXT NOT NULL);
             ''')
 
     @contextmanager
     def connect(self):
         db = sqlite3.connect(self.root / "registry.sqlite3", timeout=30)
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
         try:
             with db:
                 yield db
@@ -165,15 +182,31 @@ class DoctorRegistry:
             db.close()
 
     def identify(self, signature: Image.Image, stamp: Image.Image | None,
-                 name: str | None, document_id: str) -> DoctorRecognition:
+                 name: str | None, document_id: str, raw_signature: Image.Image | None = None) -> DoctorRecognition:
         from io import BytesIO
         with self.connect() as db:
             # Serialize lookup + enrollment across extraction workers.
             db.execute("BEGIN IMMEDIATE")
-            rows = db.execute("SELECT * FROM doctors").fetchall()
+            rows = db.execute("SELECT d.*, t.matching_signature, t.algorithm FROM doctors d "
+                              "LEFT JOIN signature_templates t ON t.doctor_id=d.id").fetchall()
+            def png(image):
+                buffer = BytesIO()
+                image.save(buffer, format="PNG")
+                return buffer.getvalue()
+            # Old raw templates may contain printed text. Rebuild only from the
+            # original source report with its paired, independently readable stamp.
+            legacy = next((r for r in rows if r["name_key"] == name_key(name)
+                           and r["matching_signature"] is None), None)
+            if legacy and stamp is not None and legacy["source_document"] == document_id:
+                db.execute("INSERT INTO signature_templates VALUES(?,?,?,?)",
+                           (legacy["id"], "sift-ransac-masked-v2", png(signature), document_id))
+                return DoctorRecognition(status="registered", doctor_id=legacy["id"],doctor_name=legacy["name"],
+                                         notes=["Rebuilt legacy reference from isolated handwriting"] )
             scores = []
             for row in rows:
-                with Image.open(BytesIO(row["signature"])) as saved:
+                if row["matching_signature"] is None or row["algorithm"] != "sift-ransac-masked-v2":
+                    continue
+                with Image.open(BytesIO(row["matching_signature"])) as saved:
                     score = similarity(signature, saved, self.cfg)
                 scores.append((score, row))
             scores.sort(key=lambda pair: pair[0], reverse=True)
@@ -196,12 +229,10 @@ class DoctorRegistry:
             if any(row["name_key"] == name_key(name) for row in rows) or best >= .6:
                 return result.model_copy(update={"status": "needs_review"})
             identifier = hashlib.sha256(name_key(name).encode()).hexdigest()[:24]
-            def png(image):
-                buffer = BytesIO()
-                image.save(buffer, format="PNG")
-                return buffer.getvalue()
             db.execute("INSERT INTO doctors(id,name,name_key,signature,stamp,source_document) VALUES(?,?,?,?,?,?)",
-                       (identifier, name, name_key(name), png(signature), png(stamp), document_id))
+                       (identifier, name, name_key(name), png(raw_signature if raw_signature is not None else signature), png(stamp), document_id))
+            db.execute("INSERT INTO signature_templates VALUES(?,?,?,?)",
+                       (identifier, "sift-ransac-masked-v2", png(signature), document_id))
             return DoctorRecognition(status="registered", doctor_id=identifier,
                                      doctor_name=name, confidence=best)
 
@@ -237,6 +268,8 @@ class DoctorRecognizer:
             '"multiple_doctors":true or false}. Use absolute pixel coordinates in THIS image. '
             'Preserve both regions even if they overlap. Do not transcribe the signature as text. '
             'Use tight boxes; null only for an absent or unidentifiable region. '
+            'Include ALL handwritten signature strokes even when they cross printed stamp/form text. '
+            'The stamp may include English and Hindi versions of the same doctor name. '
             'same_doctor must be true only for an unambiguous signature/stamp pair.',
             long_edge=self.cfg.detection_long_edge)
         space = obj.get("coordinate_space", "normalized")
@@ -292,18 +325,47 @@ class DoctorRecognizer:
                 item.same_doctor = obj.get("same_doctor") is True
                 item.signature_usable = sig is not None and usable(sig, self.cfg)
                 item.stamp_usable = stamp is not None and usable(stamp, self.cfg)
-                if sig is not None and stamp is not None:
-                    x1, y1, x2, y2 = obj["signature"]
-                    a1, b1, a2, b2 = obj["stamp"]
-                    if min(x2, a2) > max(x1, a1) and min(y2, b2) > max(y1, b1):
+                matching_signature = None
+                if sig is not None:
+                    try:
+                        isolation = self.ask_json(sig,
+                            'Identify every PRINTED or STAMPED text line and form rule in this signature crop. '
+                            'Do not box freehand signature strokes as text. '
+                            'Return {"coordinate_space":"normalized", "text_boxes":[[x1,y1,x2,y2],...], '
+                            '"complete":true or false, "handwriting_present":true or false}. '
+                            'Coordinates MUST be normalized 0..1 relative to THIS CROP. '
+                            'complete means all printed/stamped text and lines are boxed. '
+                            'Use [] only if there is no printed text. Do not invent or reconstruct handwriting.')
+                        boxes = isolation.get("text_boxes")
+                        if isolation.get("coordinate_space", "normalized") != "normalized":
+                            raise ValueError("Signature isolation needs normalized coordinates")
+                        overlap = overlapping_stamp(obj["signature"], obj["stamp"] if stamp is not None else None)
+                        cleaned, mask, fraction = isolate_signature(sig, boxes, overlap)
+                        item.signature_text_boxes = boxes + ([overlap] if overlap else [])
+                        item.signature_retained_ink_ratio = fraction
+                        item.signature_isolation_complete = (isolation.get("complete") is True
+                                                             and isolation.get("handwriting_present") is True)
+                        matching_path = self.diagnostic_dir / "signature_matching.png"
+                        mask_path = self.diagnostic_dir / "signature_mask.png"
+                        cleaned.save(matching_path)
+                        mask.save(mask_path)
+                        item.signature_matching_path = matching_path.relative_to(self.root).as_posix()
+                        item.signature_mask_path = mask_path.relative_to(self.root).as_posix()
+                        item.signature_usable = (item.signature_isolation_complete and fraction >= .1
+                                                 and usable(cleaned, self.cfg))
+                        if item.signature_usable:
+                            matching_signature = cleaned
+                        if overlap:
+                            item.notes.append("Overlapping original retained; stamp pixels excluded from signature matching")
+                    except Exception as exc:
                         item.signature_usable = False
-                        item.notes.append("Overlapping stamp/signature retained for review; excluded from matching")
-                if sig is not None and not item.signature_usable:
-                    item.notes.append("Signature is not suitable for automatic matching")
+                        item.notes.append(f"Signature isolation failed: {exc}")
+                    if not item.signature_usable:
+                        item.notes.append("Original signature saved; insufficient isolated handwriting for automatic matching")
                 if stamp is not None and not item.stamp_usable:
                     item.notes.append("Stamp is not suitable for OCR/enrollment")
                 # OCR failure must never discard crops or the signature candidate.
-                candidate = dict(idx=idx, signature=sig if item.signature_usable else None,
+                candidate = dict(idx=idx, signature=matching_signature, raw_signature=sig,
                                  stamp=stamp if item.stamp_usable else None, name=None, text=None,
                                  paired=item.same_doctor, boxes=item.boxes, evidence=item)
                 candidates.append(candidate)
@@ -311,12 +373,15 @@ class DoctorRecognizer:
                 if item.stamp_usable:
                     first = self.ask_json(stamp,
                         'OCR this doctor stamp. Return {"text": "verbatim visible stamp text", '
-                        '"doctor_name": "full personal name" or null}. Do not infer missing letters '
+                        '"doctor_name": "personal name from the English line when available" or null}. '
+                        'Preserve initials; never expand them. Do not concatenate Hindi and English names. '
+                        'Do not infer missing letters '
                         'or use a designation/hospital as a name. Unreadable personal name must be null.')
                     item.stamp_text = first.get("text") if isinstance(first.get("text"), str) else None
                     second = self.ask_json(stamp,
                         'Read only the fully legible personal name printed inside this stamp. '
-                        'Return {"doctor_name": "name" or null}. Never complete initials or guess letters.')
+                        'Return {"doctor_name": "name" or null}. Prefer the English personal name line when available. '
+                        'Never concatenate bilingual versions, complete initials or guess letters.')
                     a, b = valid_name(first.get("doctor_name")), valid_name(second.get("doctor_name"))
                     text = first.get("text")
                     item.stamp_text = text if isinstance(text, str) else None
@@ -344,18 +409,20 @@ class DoctorRecognizer:
             result = DoctorRecognition(status="ambiguous", notes=["Multiple doctors on report"])
         elif len(names) > 1:
             result = DoctorRecognition(status="identity_conflict", notes=["Stamp names disagree across pages"])
-        elif len(signatures) == 2 and similarity(signatures[0]["signature"], signatures[1]["signature"], self.cfg) < self.cfg.similarity_threshold:
+        elif (len(signatures) == 2 and not all(c["name"] and c["paired"] for c in signatures)
+              and similarity(signatures[0]["signature"], signatures[1]["signature"], self.cfg) < self.cfg.similarity_threshold):
             result = DoctorRecognition(status="needs_review", notes=["Page 3/4 signatures disagree or cannot be reliably compared"])
         elif best["signature"] is not None:
             # Check any readable stamp name for contradictions, even if unpaired.
             observed_name = next((c["name"] for c in candidates if c["name"]), None)
             result = self.registry.identify(best["signature"], best["stamp"] if best["paired"] and best["name"] else None,
-                                            observed_name, document_id)
+                                            observed_name, document_id, raw_signature=best["raw_signature"])
         elif best["evidence"].signature_path:
             result = DoctorRecognition(status="needs_review", notes=["Signature extracted but unsuitable for matching"])
         selected = best["evidence"]
         for field in ("signature_path", "stamp_path", "combined_path", "annotated_path", "page_index", "boxes", "stamp_text"):
             setattr(result, field, getattr(selected, field))
+        result.stamp_doctor_name = selected.doctor_name
         result.evidence = evidence
         result.notes.extend(errors)
         log.info("doc %s doctor: status=%s name=%s similarity=%.3f signature=%s stamp=%s notes=%s",

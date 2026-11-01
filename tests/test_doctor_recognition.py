@@ -40,6 +40,8 @@ def test_quality_and_actual_visual_match():
 
 def test_names():
     assert name_key("Dr. A. Kumar") == name_key("A Kumar")
+    assert name_key("Dr.A.Robin") == name_key("A Robin")
+    assert name_key("Dravid Singh") == "dravid singh"
     assert valid_name("Medical Officer") is None
     assert valid_name("unreadable") is None
     assert valid_name("Dr. A Kumar") == "Dr. A Kumar"
@@ -80,6 +82,8 @@ class FakeExtractor:
     def __init__(self, responses):
         self.responses = iter(responses)
     def _ask(self, *args, **kwargs):
+        if len(args)>1 and args[1].startswith('Identify every PRINTED'):
+            return '{"coordinate_space":"normalized","text_boxes":[],"complete":true,"handwriting_present":true}'
         return next(self.responses)
 
 
@@ -175,15 +179,16 @@ def test_ocr_failure_preserves_extracted_crops(tmp_path):
     assert result.notes
 
 
-def test_overlap_saved_but_never_matched(tmp_path):
+def test_overlap_saved_with_printed_region_excluded(tmp_path):
     path = evidence_page(tmp_path)
     detection = '{"signature":[0.04,0.08,0.46,0.39],"stamp":[0.20,0.08,0.46,0.39],"same_doctor":true}'
     recognizer = DoctorRecognizer(FakeExtractor([detection, '{"doctor_name":null}', '{"doctor_name":null}']),
                                  tmp_path, RecognitionConfig(registry_dir='gallery'))
     result = recognizer.process('doc', {2:path}, tmp_path/'doc')
-    assert result.status == 'needs_review'
+    assert result.status in {'unmatched', 'needs_review'}
     assert result.signature_path and result.stamp_path
-    assert not result.evidence[0].signature_usable
+    assert result.evidence[0].signature_matching_path
+    assert result.evidence[0].signature_text_boxes
     assert result.evidence[0].notes
     with recognizer.registry.connect() as db:
         assert db.execute('SELECT count(*) FROM doctors').fetchone()[0] == 0
@@ -227,3 +232,46 @@ def test_empty_full_page_retries_lower_region_and_remaps_boxes(tmp_path):
     result = recognizer.process('doc',{2:path},tmp_path/'doc')
     assert result.evidence[0].boxes['signature'] == pytest.approx([.1,.415,.4,.545])
     assert (tmp_path/'doc/doctor_evidence/page_0002/response_02.json').is_file()
+
+
+def test_overlapping_reference_enrolled_with_raw_and_masked_assets(tmp_path):
+    path = evidence_page(tmp_path)
+    detection = '{"signature":[0.04,0.08,0.46,0.39],"stamp":[0.35,0.25,0.70,0.45],"same_doctor":true}'
+    responses = [detection, '{"doctor_name":"Dr. A Robin","text":"Dr. A Robin DMO BRC"}',
+                 '{"doctor_name":"A Robin"}']
+    recognizer = DoctorRecognizer(FakeExtractor(responses),tmp_path,RecognitionConfig(registry_dir='gallery'))
+    result = recognizer.process('new-report',{2:path},tmp_path/'doc')
+    assert result.status == 'registered'
+    assert result.doctor_name == 'Dr. A Robin'
+    assert result.stamp_doctor_name == 'Dr. A Robin'
+    evidence = result.evidence[0]
+    assert evidence.signature_usable
+    assert evidence.signature_isolation_complete
+    assert evidence.signature_matching_path
+    from io import BytesIO
+    with recognizer.registry.connect() as db:
+        row = db.execute('SELECT d.signature,t.matching_signature FROM doctors d JOIN signature_templates t ON t.doctor_id=d.id').fetchone()
+        assert Image.open(BytesIO(row['signature'])).mode == 'RGB'
+        assert Image.open(BytesIO(row['matching_signature'])).mode == 'RGBA'
+    # No new stamp/name: a matching signature retrieves the name stored at enrollment.
+    with Image.open(tmp_path/evidence.signature_matching_path) as saved:
+        match = recognizer.registry.identify(saved,None,None,'old-stampless-report')
+    assert match.status == 'matched'
+    assert match.doctor_name == result.doctor_name
+
+
+def test_failed_isolation_still_reads_stamp_without_enrollment(tmp_path):
+    class UncertainIsolation(FakeExtractor):
+        def _ask(self,*args,**kwargs):
+            if args[1].startswith('Identify every PRINTED'):
+                return '{"text_boxes":[],"complete":false,"handwriting_present":true}'
+            return super()._ask(*args,**kwargs)
+    responses=['{"signature":[0.04,0.08,0.46,0.39],"stamp":[0.54,0.08,0.96,0.39],"same_doctor":true}',
+               '{"doctor_name":"Dr. A Robin","text":"Dr. A Robin"}', '{"doctor_name":"A Robin"}']
+    recognizer=DoctorRecognizer(UncertainIsolation(responses),tmp_path,RecognitionConfig(registry_dir='gallery'))
+    result=recognizer.process('doc',{2:evidence_page(tmp_path)},tmp_path/'doc')
+    assert result.status == 'needs_review'
+    assert result.stamp_doctor_name == 'Dr. A Robin'
+    assert result.signature_path and result.stamp_path
+    with recognizer.registry.connect() as db:
+        assert db.execute('SELECT count(*) FROM doctors').fetchone()[0]==0

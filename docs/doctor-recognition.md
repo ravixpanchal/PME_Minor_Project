@@ -72,8 +72,10 @@ with other declared page counts and checks rendered page completeness.
 - A reliable signature match retrieves the saved name when no current stamp is
   readable. A contradictory readable name blocks identification. Signature-only
   matches do not add gallery references, preventing progressive gallery drift.
-- Overlapping/low-quality signatures are retained for review but excluded from
-  automatic matching/enrollment. Same-name weak matches are never auto-merged.
+- Overlap alone does not reject a signature. Keep its original crop and mask
+  printed/stamped text for matching. Low-quality or insufficient isolated
+  handwriting remains available for review but cannot enroll a reference.
+  Same-name weak matches are never auto-merged.
 
 Statuses: `registered`, `matched`, `unmatched`, `missing`, `missing_signature`,
 `ambiguous`, `identity_conflict`, `needs_review`, `error`. A clear stamp without a
@@ -196,3 +198,47 @@ be handled with the same care as the reports. No quality or matching thresholds
 were lowered to force an identity. If a report still produces no crops/name,
 inspect its `record.json` doctor metadata and saved responses to distinguish an
 empty detection, coordinate problem, OCR disagreement or quality rejection.
+
+
+## Signatures crossing the stamp or form labels
+
+Real examples include handwriting that crosses a bilingual name stamp and the
+printed medical-examiner label. The original signature, stamp and combined crop
+are always preserved when localized. The name is read from the stamp (two consistent
+OCR reads); the signature itself is not transcribed into a name. Names are not
+hardcoded from the supplied examples.
+
+An additional close-up VLM pass locates printed text/form-rule boxes inside the
+signature crop. Those boxes and the intersection with the detected stamp are
+masked for matching. `signature_matching.png` is an RGBA matching asset: its alpha
+channel marks excluded pixels. `signature_mask.png` displays the mask (white kept,
+black excluded). The original `signature.png` stays unmodified. Masking removes
+observable regions; it does not reconstruct strokes hidden under printed ink.
+
+The matcher uses only the remaining handwriting. Keypoint detection excludes
+masked boundaries, and ink comparisons use jointly visible areas with minimum
+coverage. Enrollment requires a complete text-isolation response, visible
+handwriting, usable remaining ink and a paired readable stamp. Mask failure does
+not prevent stamp OCR or saving original evidence. The UI separately shows the
+stamp's OCR name, recognized identity, matching image and mask. If both pages
+have consistent paired names, the best usable page can supply the reference
+without requiring their handwritten copies to be visually identical.
+
+The persistent gallery now has an additive `signature_templates` table containing
+versioned `sift-ransac-masked-v2` matching PNGs. The existing `doctors` table retains
+original signature/stamp blobs and IDs. Older raw-only references are not scored
+as if they were text-free. Running `--doctor-only` on the original stamped source
+report can rebuild a masked reference under the same doctor ID; weak same-name
+signatures from a different source still require review. No registry reset is
+needed. Signature-only matches do not add new references.
+
+The dashboard database adds `doctor_signature_isolation`, keyed to page evidence,
+for matching paths, masks, excluded text boxes, isolation completion and retained
+ink fraction. This avoids altering existing evidence-table columns. Old records
+remain readable; resync after doctor-only extraction to update the new metadata.
+
+These changes were tested with synthetic overlaps, failed isolation, persistence,
+legacy-gallery handling and retrieval of a saved name without a current stamp.
+The real screenshots establish the required layout but were not processed with a
+VLM here. Short/sparse handwriting or ink almost entirely inside the stamp may
+still be insufficient for reliable matching; review results on the GPU system.
