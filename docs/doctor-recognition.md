@@ -278,3 +278,27 @@ columns. Normal field extraction and the four-candidate doctor-only command rema
 unchanged. Disable this profile for other report layouts or adjust
 `layout_search_regions` after visual inspection. Empty/unreadable OCR remains
 unidentified; names and signature matches are never manufactured to fill the UI.
+
+
+## Extraction-time name catalog and saved evidence
+
+Every stamp name passing both OCR consistency reads is now saved immediately during
+extraction in the persistent gallery database, without waiting for dashboard import
+or a usable signature. `doctor_names` has a UNIQUE normalized name key; case,
+title, punctuation and spacing variants do not create duplicate name entries.
+`doctor_name_evidence` stores the source report/page, original signature and stamp
+PNG blobs when detected, OCR-region PNG, stamp text and pairing/localization
+provenance. Reprocessing the same document/page updates that observation rather
+than duplicating it. Original crops are also saved under each report directory.
+
+The record/dashboard show `stamp_name_saved` and a stable `stamp_name_id` to confirm
+that this extraction-time write succeeded. The name catalog groups spelling-equivalent
+names; it does not assert that namesakes are the same person. The signature matcher
+still uses only the separate qualified signature gallery/templates. Fallback-region
+OCR saves the readable stamp name and source evidence but cannot enroll an undetected
+signature. Qualified paired evidence is registered automatically, and later reports
+can retrieve the saved name through a sufficiently reliable signature match.
+
+Use the four-candidate doctor-only command to populate these new fields for already
+processed reports, then run the selected database import and reopen/refresh Streamlit.
+No registry reset or training is required.

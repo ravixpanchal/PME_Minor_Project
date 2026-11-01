@@ -269,6 +269,7 @@ def show_candidate(candidate: Candidate) -> None:
         doctor = payload.get("doctor_recognition") or {}
         kv("Recognized doctor", doctor.get("doctor_name"))
         kv("Name read from stamp", doctor.get("stamp_doctor_name"))
+        kv("Stamp name saved", "Yes" if doctor.get("stamp_name_saved") else "Not saved")
         kv("Signature matching status", doctor.get("status", "Not processed"))
         st.caption(f"Signature similarity: {doctor.get('confidence', 0):.1%} (not an identity probability)")
         for col, kind in zip(st.columns(2), ("signature", "stamp")):

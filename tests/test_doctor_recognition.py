@@ -253,6 +253,9 @@ def test_overlapping_reference_enrolled_with_raw_and_masked_assets(tmp_path):
         row = db.execute('SELECT d.signature,t.matching_signature FROM doctors d JOIN signature_templates t ON t.doctor_id=d.id').fetchone()
         assert Image.open(BytesIO(row['signature'])).mode == 'RGB'
         assert Image.open(BytesIO(row['matching_signature'])).mode == 'RGBA'
+        observation=db.execute('SELECT raw_signature,stamp FROM doctor_name_evidence').fetchone()
+        assert observation['raw_signature'] and observation['stamp']
+        assert result.stamp_name_saved
     # No new stamp/name: a matching signature retrieves the name stored at enrollment.
     with Image.open(tmp_path/evidence.signature_matching_path) as saved:
         match = recognizer.registry.identify(saved,None,None,'old-stampless-report')

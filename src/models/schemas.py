@@ -179,6 +179,8 @@ class DoctorRecognition(BaseModel):
     boxes: Dict[str, Any] = Field(default_factory=dict)
     notes: List[str] = Field(default_factory=list)
     stamp_doctor_name: Optional[str] = None
+    stamp_name_id: Optional[str] = None
+    stamp_name_saved: bool = False
     algorithm: str = "sift-ransac-masked-v2"
     evidence: List[DoctorPageEvidence] = Field(default_factory=list)
     annotated_path: Optional[str] = None

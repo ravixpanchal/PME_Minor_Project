@@ -71,3 +71,21 @@ def test_area_limit_applies_to_page_not_closeup():
     box=[.05,.05,.95,.95]
     assert crop_box(im,box) is None
     assert crop_box(im,box,max_area=1) is not None
+
+
+def test_name_saved_during_extraction_and_deduplicated_across_reports(tmp_path):
+    null='{"signature":null,"stamp":null}'
+    first='{"text":"DR. A. ROBIN DMO / BRC","doctor_name":"Dr. A. Robin"}'
+    second='{"doctor_name":"A Robin"}'
+    image=page(tmp_path)
+    for doc in ('candidate1','candidate2','candidate1'):
+        recognizer=DoctorRecognizer(Fake([null,null,first,second]),tmp_path,config())
+        result=recognizer.process(doc,{2:image},tmp_path/doc)
+        assert result.stamp_name_saved
+        assert result.stamp_name_id
+        assert result.doctor_id is None  # A name observation is not a matching template.
+    with recognizer.registry.connect() as db:
+        assert db.execute('SELECT count(*) FROM doctor_names').fetchone()[0]==1
+        assert db.execute('SELECT count(*) FROM doctor_name_evidence').fetchone()[0]==2
+        assert db.execute('SELECT ocr_region FROM doctor_name_evidence LIMIT 1').fetchone()[0]
+        assert db.execute('SELECT count(*) FROM signature_templates').fetchone()[0]==0

@@ -178,6 +178,15 @@ class DoctorRegistry:
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, name_key TEXT UNIQUE NOT NULL,
                     signature BLOB NOT NULL, stamp BLOB NOT NULL, source_document TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS doctor_names (
+                    id TEXT PRIMARY KEY, name_key TEXT UNIQUE NOT NULL,
+                    display_name TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+                CREATE TABLE IF NOT EXISTS doctor_name_evidence (
+                    document_id TEXT NOT NULL, page_index INTEGER NOT NULL CHECK(page_index IN (2,3)),
+                    name_id TEXT NOT NULL REFERENCES doctor_names(id), stamp_text TEXT,
+                    raw_signature BLOB, stamp BLOB, ocr_region BLOB NOT NULL,
+                    localization_method TEXT NOT NULL, paired INTEGER NOT NULL,
+                    PRIMARY KEY(document_id,page_index));
                 CREATE TABLE IF NOT EXISTS signature_templates (
                     doctor_id TEXT PRIMARY KEY REFERENCES doctors(id),
                     algorithm TEXT NOT NULL, matching_signature BLOB NOT NULL,
@@ -194,6 +203,35 @@ class DoctorRegistry:
                 yield db
         finally:
             db.close()
+
+    def save_stamp_name(self, name, document_id, evidence, root):
+        """Persist stamp OCR immediately, independently from signature enrollment.
+
+        A unique normalized NAME is a catalog entry, not proof that all people
+        with that name share one identity. Matching never reads this evidence table.
+        """
+        if valid_name(name) is None or evidence.stamp_ocr_path is None:
+            return None
+        key = name_key(name)
+        identifier = hashlib.sha256(key.encode()).hexdigest()[:24]
+        def asset(path):
+            return (root / path).read_bytes() if path else None
+        signature = asset(evidence.signature_path)
+        stamp = asset(evidence.stamp_path)
+        region = asset(evidence.stamp_ocr_path)
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO doctor_names(id,name_key,display_name) VALUES(?,?,?) "
+                       "ON CONFLICT(name_key) DO NOTHING", (identifier,key,name))
+            db.execute("INSERT INTO doctor_name_evidence VALUES(?,?,?,?,?,?,?,?,?) "
+                       "ON CONFLICT(document_id,page_index) DO UPDATE SET "
+                       "name_id=excluded.name_id,stamp_text=excluded.stamp_text,"
+                       "raw_signature=excluded.raw_signature,stamp=excluded.stamp,"
+                       "ocr_region=excluded.ocr_region,localization_method=excluded.localization_method,"
+                       "paired=excluded.paired",
+                       (document_id,evidence.page_index,identifier,evidence.stamp_text,
+                        signature,stamp,region,evidence.localization_method,int(evidence.same_doctor)))
+        return identifier
 
     def identify(self, signature: Image.Image, stamp: Image.Image | None,
                  name: str | None, document_id: str, raw_signature: Image.Image | None = None) -> DoctorRecognition:
@@ -502,6 +540,13 @@ class DoctorRecognizer:
         if result.status == "missing_signature" and result.stamp_doctor_name:
             result.status = "stamp_read"
             result.doctor_name = None
+        for candidate in candidates:
+            if candidate["name"]:
+                saved_id = self.registry.save_stamp_name(candidate["name"], document_id,
+                                                          candidate["evidence"], self.root)
+                if name_key(candidate["name"]) == name_key(result.stamp_doctor_name) and saved_id:
+                    result.stamp_name_id = saved_id
+                    result.stamp_name_saved = True
         result.evidence = evidence
         result.notes.extend(errors)
         log.info("doc %s doctor: status=%s recognized_name=%s stamp_name=%s similarity=%.3f signature=%s stamp=%s notes=%s",
