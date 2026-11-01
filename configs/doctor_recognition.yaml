@@ -12,3 +12,10 @@ retry_empty_detection: true
 
 # Small full-page-relative margin around the signature/stamp union when no valid enclosing block is returned.
 combined_padding: 0.008
+
+# Explicit RRB layout profile from the reviewed four-page report format.
+# Used only as an OCR/search region, never as a detected signature or stamp.
+layout_fallback_enabled: true
+layout_search_regions:
+  2: [0.38, 0.66, 0.99, 0.95]
+  3: [0.48, 0.65, 0.99, 0.95]

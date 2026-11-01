@@ -252,3 +252,29 @@ separate signature/stamp boxes. Combined crops prefer a validated enclosing regi
 or use a padded union; raw signatures remain intact and matching assets remain
 separate. Independent crops are not discarded if a combined region is rejected.
 The enclosing box and child boxes use normalized coordinates in the saved metadata.
+
+## Name OCR when tight box detection fails
+
+Stamp-name OCR no longer requires a valid tightly detected stamp rectangle. It can
+read a detected enclosing doctor region. For the reviewed RRB four-page layout,
+`layout_fallback_enabled` additionally enables configurable per-page examiner
+search regions. These are spatial priors, not detected signatures/stamps and not
+hardcoded doctor identities. The close-up localizer gets another chance in that
+region; a box covering most of the close-up is valid when mapped to a reasonable
+full-page area. Previously the full-page 25% area limit was incorrectly reused
+inside the close-up and could reject usable detections.
+
+If tight localization still fails, the search region is saved with an annotation
+and used for two consistent stamp OCR reads. The UI labels it `layout_search`,
+displays a warning about undetected boundaries and shows the observed stamp name.
+Status `stamp_read` means a stamp name was read but there is no registered/matched
+signature identity. No signature template is enrolled from a search region alone.
+The main clinical doctor association can use this observed name while recognition
+metadata clearly distinguishes it from signature matching.
+
+Paths/provenance (`stamp_ocr_path`, `localization_method`) are stored in raw JSON
+and the additive isolation metadata table without changing existing evidence
+columns. Normal field extraction and the four-candidate doctor-only command remain
+unchanged. Disable this profile for other report layouts or adjust
+`layout_search_regions` after visual inspection. Empty/unreadable OCR remains
+unidentified; names and signature matches are never manufactured to fill the UI.

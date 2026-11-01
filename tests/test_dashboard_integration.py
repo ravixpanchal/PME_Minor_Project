@@ -180,3 +180,25 @@ def test_selection_import_excludes_stale_invalid_records(tmp_path):
     with Session(engine) as session:
         assert import_directory(session,tmp_path,document_ids=selected_documents(selection)) == (1,0)
         assert len(list(session.scalars(select(ExtractionRun)))) == 1
+
+
+def test_stamp_ocr_without_signature_is_saved_without_gallery_identity(tmp_path):
+    from src.database.models import DoctorRecognitionResult, DoctorEvidence
+    data=record(status='stamp_read')
+    data['doctor_recognition'].update(doctor_name=None,stamp_doctor_name='Dr. A Robin',evidence=[{
+        'page_index':2,'image_width':1200,'image_height':1800,
+        'localization_method':'layout_search',
+        'stamp_ocr_path':'data/processed/doc/doctor_evidence/page_0002/combined.png',
+        'doctor_name':'Dr. A Robin',
+    }])
+    (tmp_path/'record.json').write_text(json.dumps(data))
+    engine=create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        assert import_directory(session,tmp_path)==(1,0)
+        result=session.scalar(select(DoctorRecognitionResult))
+        assert result.status=='stamp_read'
+        assert result.observed_name=='Dr. A Robin'
+        assert result.registry_id is None
+        assert result.extraction_run.examination.examining_doctor.doctor_name=='Dr. A Robin'
+        assert session.scalar(select(DoctorEvidence)).isolation.payload['localization_method']=='layout_search'

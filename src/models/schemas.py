@@ -144,6 +144,8 @@ class DoctorPageEvidence(BaseModel):
     signature_text_boxes: List[List[float]] = Field(default_factory=list)
     signature_isolation_complete: bool = False
     signature_retained_ink_ratio: float = Field(default=0, ge=0, le=1)
+    localization_method: Literal["detected", "region_refinement", "layout_search"] = "detected"
+    stamp_ocr_path: Optional[str] = None
     signature_usable: bool = False
     stamp_usable: bool = False
     same_doctor: bool = False
@@ -166,7 +168,7 @@ class DoctorPageEvidence(BaseModel):
 class DoctorRecognition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["missing", "missing_signature", "unmatched", "matched", "registered",
-                    "ambiguous", "identity_conflict", "needs_review", "error"] = "missing"
+                    "ambiguous", "identity_conflict", "needs_review", "stamp_read", "error"] = "missing"
     doctor_id: Optional[str] = None
     doctor_name: Optional[str] = None
     confidence: float = Field(default=0, ge=0, le=1)

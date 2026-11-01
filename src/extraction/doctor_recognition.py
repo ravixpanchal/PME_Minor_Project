@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.extraction.vlm_extractor import _first_json_object, _pin_size
 from src.models.schemas import DoctorRecognition
@@ -36,8 +36,21 @@ class RecognitionConfig(BaseModel):
     min_ink_pixels: int = Field(default=100, ge=30)
     detection_long_edge: int = Field(default=2016, ge=672, le=2688)
     retry_empty_detection: bool = True
+    layout_fallback_enabled: bool = False
+    layout_search_regions: dict[int, list[float]] = Field(default_factory=dict)
     combined_padding: float = Field(default=.008, ge=0, le=.03)
     min_sharpness: float = Field(default=12, ge=0)
+
+
+    @field_validator("layout_search_regions")
+    @classmethod
+    def valid_search_regions(cls, value):
+        for page, box in value.items():
+            if page not in (2,3) or len(box)!=4 or not all(math.isfinite(v) for v in box):
+                raise ValueError("Layout search regions require page 2/3 and four finite coordinates")
+            if not (0 <= box[0] < box[2] <= 1 and 0 <= box[1] < box[3] <= 1):
+                raise ValueError("Layout search regions must be normalized")
+        return value
 
 
 def name_key(name: str | None) -> str:
@@ -58,7 +71,7 @@ def valid_name(name: object) -> str | None:
     return name
 
 
-def crop_box(image: Image.Image, box: object) -> Image.Image | None:
+def crop_box(image: Image.Image, box: object, max_area=.25) -> Image.Image | None:
     """Reject malformed/out-of-frame boxes instead of silently clamping."""
     if not isinstance(box, list) or len(box) != 4:
         return None
@@ -67,7 +80,7 @@ def crop_box(image: Image.Image, box: object) -> Image.Image | None:
     x1, y1, x2, y2 = box
     if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
         return None
-    if (x2-x1)*(y2-y1) > .25:
+    if (x2-x1)*(y2-y1) > max_area:
         return None
     bounds = (round(x1*image.width), round(y1*image.height),
               round(x2*image.width), round(y2*image.height))
@@ -314,25 +327,56 @@ class DoctorRecognizer:
                 self.diagnostic_dir = out_dir / "doctor_evidence" / f"page_{idx:04d}"
                 self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
                 self.request_number = 0
-                obj = self.locate(image, page_index=idx)
-                if self.cfg.retry_empty_detection and all(crop_box(image, obj.get(k)) is None for k in ("signature", "stamp", "doctor_region")):
-                    # A second, larger view of the bottom portion can expose small
-                    # examiner marks. Coordinates must be mapped back to raw page.
-                    top = int(image.height * .35)
-                    local = image.crop((0, top, image.width, image.height))
-                    retry = self.locate(local, page_index=idx)
-                    for kind in ("signature", "stamp", "doctor_region"):
-                        box = retry.get(kind)
-                        if crop_box(local, box) is not None:
-                            retry[kind] = [box[0], (top+box[1]*local.height)/image.height,
-                                           box[2], (top+box[3]*local.height)/image.height]
-                        else:
-                            retry[kind] = None
-                    obj = retry
+                localization_method = "detected"
+                localization_notes = []
+                try:
+                    obj = self.locate(image, page_index=idx)
+                except (ValueError, TypeError) as exc:
+                    obj = {}
+                    errors.append(f"Page {idx+1}: Full-page localization failed: {exc}")
+                    localization_notes.append(f"Full-page localization failed: {exc}")
+                if self.cfg.retry_empty_detection and all(crop_box(image, obj.get(k)) is None for k in ("signature", "stamp")):
+                    region = (self.cfg.layout_search_regions.get(idx)
+                              if self.cfg.layout_fallback_enabled else None)
+                    if region is None:
+                        region = [0, .35, 1, 1]
+                    bounds = (round(region[0]*image.width),round(region[1]*image.height),
+                              round(region[2]*image.width),round(region[3]*image.height))
+                    local = image.crop(bounds)
+                    try:
+                        retry = self.locate(local, page_index=idx)
+                        retry["multiple_doctors"] = (retry.get("multiple_doctors") is True or obj.get("multiple_doctors") is True)
+                        for kind in ("signature", "stamp", "doctor_region"):
+                            box = retry.get(kind)
+                            # A stamp can occupy most of a close-up. The 25% rule
+                            # applies to the full report, not the search window.
+                            if crop_box(local, box, max_area=1) is not None:
+                                raw_box = [(bounds[0]+box[0]*local.width)/image.width,
+                                           (bounds[1]+box[1]*local.height)/image.height,
+                                           (bounds[0]+box[2]*local.width)/image.width,
+                                           (bounds[1]+box[3]*local.height)/image.height]
+                                retry[kind] = raw_box if crop_box(image,raw_box) is not None else None
+                            else:
+                                retry[kind] = None
+                        # Preserve any valid full-page detection when refinement
+                        # cannot replace it. Pairing must refer to one view only.
+                        if any(crop_box(image,retry.get(k)) is not None for k in ("signature","stamp")):
+                            obj = retry
+                            localization_method = "region_refinement"
+                    except (ValueError, TypeError) as exc:
+                        localization_notes.append(f"Close-up localization failed: {exc}")
+                if (self.cfg.layout_fallback_enabled and idx in self.cfg.layout_search_regions
+                    and all(crop_box(image,obj.get(k)) is None for k in ("signature","stamp","doctor_region"))):
+                    obj["doctor_region"] = self.cfg.layout_search_regions[idx]
+                    obj["same_doctor"] = False
+                    localization_method = "layout_search"
+                    localization_notes.append("Configured RRB examiner search region; individual signature/stamp boundaries were NOT detected")
                 multiple_doctors |= obj.get("multiple_doctors") is True
                 sig, stamp = crop_box(image, obj.get("signature")), crop_box(image, obj.get("stamp"))
                 item = save_evidence(image, {"signature": sig, "stamp": stamp}, obj, idx, out_dir, self.root, padding=self.cfg.combined_padding)
                 evidence.append(item)
+                item.localization_method = localization_method
+                item.notes.extend(localization_notes)
                 if not item.boxes:
                     item.notes.append("No valid doctor boxes detected; inspect response JSON files in this page directory")
                 log.info("doc %s page %d: signature_saved=%s stamp_saved=%s diagnostics=%s",
@@ -385,15 +429,27 @@ class DoctorRecognizer:
                                  paired=item.same_doctor, boxes=item.boxes, evidence=item)
                 candidates.append(candidate)
                 name, text = None, None
-                if item.stamp_usable:
-                    first = self.ask_json(stamp,
-                        'OCR this doctor stamp. Return {"text": "verbatim visible stamp text", '
+                # Reading a stamp name must not depend on finding a tight
+                # signature/stamp box. OCR the enclosing examiner region when
+                # necessary, while preventing fallback-only gallery enrollment.
+                ocr_image = stamp
+                item.stamp_ocr_path = item.stamp_path
+                if (ocr_image is None and item.combined_path
+                    and crop_box(image, obj.get("doctor_region")) is not None):
+                    with Image.open(self.root / item.combined_path) as saved:
+                        ocr_image = saved.convert("RGB")
+                    item.stamp_ocr_path = item.combined_path
+                    item.notes.append("Stamp OCR used enclosing examiner region; not a separately detected stamp crop")
+                if ocr_image is not None:
+                    first = self.ask_json(ocr_image,
+                        'Read only the printed doctor name in the STAMP within this examiner region. '
+                        'Ignore candidate names, candidate signatures and handwritten notes. Return {"text": "verbatim visible stamp text", '
                         '"doctor_name": "personal name from the English line when available" or null}. '
                         'Preserve initials; never expand them. Do not concatenate Hindi and English names. '
                         'Do not infer missing letters '
                         'or use a designation/hospital as a name. Unreadable personal name must be null.')
                     item.stamp_text = first.get("text") if isinstance(first.get("text"), str) else None
-                    second = self.ask_json(stamp,
+                    second = self.ask_json(ocr_image,
                         'Read only the fully legible personal name printed inside this stamp. '
                         'Return {"doctor_name": "name" or null}. Prefer the English personal name line when available. '
                         'Never concatenate bilingual versions, complete initials or guess letters.')
@@ -407,12 +463,15 @@ class DoctorRecognizer:
                 item.doctor_name = name
                 item.stamp_text = text if isinstance(text, str) else None
                 candidate.update(name=name, text=item.stamp_text)
+                log.info("doc %s page %d: stamp_name=%s OCR_source=%s localization=%s",
+                         document_id[:12],idx+1,name,item.stamp_ocr_path,item.localization_method)
             except Exception as exc:
                 errors.append(f"Page {idx+1}: {type(exc).__name__}: {exc}")
                 log.warning("doc %s page %d: %s", document_id[:12], idx+1, exc)
         names = {name_key(c["name"]) for c in candidates if c["name"]}
         candidates.sort(key=lambda c: (c["signature"] is not None,
                                       bool(c["name"] and c["paired"]),
+                                      bool(c["name"]),
                                       bool(c["evidence"].signature_path),
                                       bool(c["evidence"].stamp_path)), reverse=True)
         if not candidates:
@@ -437,10 +496,15 @@ class DoctorRecognizer:
         selected = best["evidence"]
         for field in ("signature_path", "stamp_path", "combined_path", "annotated_path", "page_index", "boxes", "stamp_text"):
             setattr(result, field, getattr(selected, field))
-        result.stamp_doctor_name = selected.doctor_name
+        if result.status == "missing_signature" and errors and not any(c["evidence"].boxes for c in candidates):
+            result.status = "error"
+        result.stamp_doctor_name = selected.doctor_name or next((c["name"] for c in candidates if c["name"]), None)
+        if result.status == "missing_signature" and result.stamp_doctor_name:
+            result.status = "stamp_read"
+            result.doctor_name = None
         result.evidence = evidence
         result.notes.extend(errors)
-        log.info("doc %s doctor: status=%s name=%s similarity=%.3f signature=%s stamp=%s notes=%s",
-                 document_id[:12], result.status, result.doctor_name, result.confidence,
+        log.info("doc %s doctor: status=%s recognized_name=%s stamp_name=%s similarity=%.3f signature=%s stamp=%s notes=%s",
+                 document_id[:12], result.status, result.doctor_name, result.stamp_doctor_name, result.confidence,
                  result.signature_path, result.stamp_path, result.notes)
         return result

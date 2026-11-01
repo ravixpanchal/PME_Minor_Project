@@ -295,6 +295,9 @@ def show_candidate(candidate: Candidate) -> None:
                         st.image(str(path), caption=label, width="stretch")
                 kv("Name read from this stamp", evidence.get("doctor_name"))
                 st.caption("Blue: signature · Orange: stamp · Green: combined region")
+                if evidence.get("localization_method") == "layout_search":
+                    st.warning("Layout search region shown; individual signature/stamp boundaries were not detected. A stamp name does not mean a signature was registered.")
+                st.caption(f"Localization: {evidence.get('localization_method', 'detected')}")
                 st.caption(f"Suitable for signature matching: {evidence.get('signature_usable', False)}")
                 if evidence.get("notes"):
                     st.caption("; ".join(evidence["notes"]))

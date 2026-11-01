@@ -99,7 +99,7 @@ def store_doctor_result(session, run, recognition):
         notes=recognition.notes)
     run.doctor_result = result
     isolation_fields = {"signature_matching_path", "signature_mask_path", "signature_text_boxes",
-                        "signature_isolation_complete", "signature_retained_ink_ratio"}
+                        "signature_isolation_complete", "signature_retained_ink_ratio", "localization_method", "stamp_ocr_path"}
     for item in recognition.evidence:
         payload = item.model_dump()
         isolated = {key: payload.pop(key) for key in isolation_fields}
@@ -473,6 +473,8 @@ def import_one(session: Session, data: PMEExtraction):
     recognition = data.doctor_recognition
     doctor_name = (recognition.doctor_name if recognition and recognition.status in
                    {"matched", "registered", "missing_signature"} else None)
+    if recognition and recognition.status == "stamp_read":
+        doctor_name = recognition.stamp_doctor_name
     if recognition is None:  # Legacy exports.
         doctor_name = clean(page3.doctor_name or page4.doctor_name)
 
