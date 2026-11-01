@@ -286,3 +286,28 @@ def test_scorer_boolean_rows_positional():
     rows = score_document(doc, gt, ex, schema)
     assert [r for r in rows if r["field"] ==
             "page_4_declarations.part_one[1].answer"][0]["taxon"] == "missed"
+
+
+def test_doctor_only_keeps_existing_candidate_fields(tmp_path, monkeypatch):
+    from src.extraction import run_extraction as rx
+    from src.models.schemas import ExtractionRecord
+    from src.models.fields import null_shape
+    doc, _ = _first_doc()
+    class FakeExtractor:
+        model_id = 'fake/vlm'
+        schema = config.schema
+        def extract_document(self, *args):
+            raise AssertionError('Doctor-only must not extract candidate fields')
+    monkeypatch.setattr(rx,'VlmSchemaExtractor',FakeExtractor)
+    _redirect_outputs(monkeypatch,tmp_path)
+    path = tmp_path/'processed/extractions'/doc/'record.json'
+    path.parent.mkdir(parents=True)
+    fields = null_shape(config.schema.fields)
+    fields['page_1_basic_info']['general_details']['candidate_name'] = 'PRESERVED CANDIDATE'
+    path.write_text(ExtractionRecord(document_id=doc,model='previous',fields=fields).model_dump_json())
+    assert rx.main(['--doctor-only','--ndocs','4']) == 0
+    updated = json.loads(path.read_text())
+    assert updated['fields'] == fields
+    assert updated['model'] == 'previous'
+    assert updated['doctor_recognition']['status'] == 'missing'
+    assert json.loads((path.parent.parent/'last_selection.json').read_text())['document_ids'] == [doc]

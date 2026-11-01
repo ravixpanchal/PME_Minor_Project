@@ -5,3 +5,7 @@ ambiguity_margin: 0.10
 min_inliers: 18
 min_ink_pixels: 100
 min_sharpness: 12
+
+# Full-page localization resolution; retry a closer lower-page view if both boxes are absent.
+detection_long_edge: 2016
+retry_empty_detection: true

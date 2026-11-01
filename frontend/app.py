@@ -20,6 +20,7 @@ if str(REPO_DIR) not in sys.path:
 from src.database.config import get_extraction_dir
 from src.database.database import get_session, init_db
 from src.database.importer import sync_extractions
+from src.database.selection import selected_documents
 from src.database.models import Candidate
 from src.database.repository import (
     get_candidate_directory,
@@ -217,7 +218,7 @@ def show_candidate(candidate: Candidate) -> None:
                         st.image(
                             str(image_path),
                             caption=image_path.name,
-                            use_container_width=True,
+                            width="stretch",
                         )
                 st.caption(
                     f"Hash/Source ID: `{document_id}` · "
@@ -284,7 +285,7 @@ def show_candidate(candidate: Candidate) -> None:
                     relative = evidence.get(f"{kind}_path")
                     path = (REPO_DIR / relative).resolve() if relative else None
                     if path and path.is_relative_to((REPO_DIR / "data").resolve()) and path.is_file():
-                        st.image(str(path), caption=label, use_container_width=True)
+                        st.image(str(path), caption=label, width="stretch")
                 st.caption("Blue: signature · Orange: stamp · Green: combined region")
                 st.caption(f"Suitable for signature matching: {evidence.get('signature_usable', False)}")
                 if evidence.get("notes"):
@@ -307,7 +308,7 @@ def show_candidate(candidate: Candidate) -> None:
                 st.dataframe(
                     [{"Row": row.row_label, "Right": row.right_value, "Left": row.left_value}
                      for row in case.vision_rows],
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
             st.markdown("</div>", unsafe_allow_html=True)
@@ -337,7 +338,7 @@ def show_candidate(candidate: Candidate) -> None:
                 st.dataframe(
                     [{"Part": item.part, "Question": item.question_no, "Answer": item.answer}
                      for item in examination.declarations],
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                 )
             else:
@@ -365,8 +366,12 @@ def main() -> None:
         path.parent.name
         for path in extraction_dir.rglob("record.json")
     }
-    with get_session() as session:
-        sync_extractions(session)
+    selection_path = extraction_dir / "last_selection.json"
+    if selection_path.is_file():
+        try:
+            current_document_ids = selected_documents(selection_path)
+        except (OSError, ValueError):
+            st.warning("Cannot read last extraction selection; showing available reports.")
     with get_session() as session:
         stats = get_dashboard_stats(session, current_document_ids)
 
@@ -402,11 +407,11 @@ def main() -> None:
         st.markdown("## ✚ PME Dashboard")
         st.caption("Connected directly to the existing database")
         page = st.radio("Navigate", ["Search candidate", "Candidate directory"])
-        if st.button("Sync extraction files", use_container_width=True):
+        if st.button("Sync extraction files", width="stretch"):
             with st.spinner("Fetching and syncing extraction files..."):
                 try:
                     with get_session() as session:
-                        imported, failed = sync_extractions(session)
+                        imported, failed = sync_extractions(session, document_ids=current_document_ids)
                 except Exception as error:
                     LOGGER.exception("Manual extraction sync failed")
                     st.session_state.sync_message = (
@@ -454,7 +459,7 @@ def main() -> None:
                 )
             with action:
                 st.markdown("<div style='height: 1.72rem'></div>", unsafe_allow_html=True)
-                submitted = st.form_submit_button("Search", type="primary", use_container_width=True)
+                submitted = st.form_submit_button("Search", type="primary", width="stretch")
         st.markdown("</div>", unsafe_allow_html=True)
 
         if "search_candidate_ids" not in st.session_state:
@@ -543,7 +548,7 @@ def main() -> None:
                     "Roll number": candidate.roll_number or "Not available",
                     "Recruitment CEN": candidate.recruitment_cen or "Not available",
                 } for candidate in candidates],
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 column_config={
                     "Candidate name": st.column_config.TextColumn("Candidate name", width="large"),
@@ -584,7 +589,7 @@ def main() -> None:
                     data=csv_data,
                     file_name="filtered_candidates.csv",
                     mime="text/csv",
-                    use_container_width=True,
+                    width="stretch",
                 )
             with download_columns[1]:
                 st.download_button(
@@ -592,7 +597,7 @@ def main() -> None:
                     data=excel_buffer.getvalue(),
                     file_name="filtered_candidates.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    width="stretch",
                 )
             if not candidates:
                 st.info("No candidates match this filter.")

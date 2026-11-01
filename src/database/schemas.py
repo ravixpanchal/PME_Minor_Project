@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.models.schemas import DoctorRecognition
+from .dates import report_date
 
 
 # ============================================================
@@ -62,30 +63,7 @@ class GeneralDetails(BaseModel):
         Accept common date formats produced by OCR.
         """
 
-        if value in (None, ""):
-            return None
-
-        if isinstance(value, date):
-            return value
-
-        value = str(value).strip()
-
-        for fmt in (
-            "%d-%m-%Y",
-            "%d/%m/%Y",
-            "%Y-%m-%d",
-        ):
-            try:
-                return datetime.strptime(
-                    value,
-                    fmt,
-                ).date()
-            except ValueError:
-                continue
-
-        raise ValueError(
-            f"Unsupported date: {value!r}"
-        )
+        return report_date(value)
 
 
 class NarrativeDetails(BaseModel):
@@ -374,30 +352,7 @@ class Page4(BaseModel):
         Parse the handwritten declaration date.
         """
 
-        if value in (None, ""):
-            return None
-
-        if isinstance(value, date):
-            return value
-
-        value = str(value).strip()
-
-        for fmt in (
-            "%d-%m-%Y",
-            "%d/%m/%Y",
-            "%Y-%m-%d",
-        ):
-            try:
-                return datetime.strptime(
-                    value,
-                    fmt,
-                ).date()
-            except ValueError:
-                continue
-
-        raise ValueError(
-            f"Unsupported declaration date: {value!r}"
-        )
+        return report_date(value)
 
 
 # ============================================================

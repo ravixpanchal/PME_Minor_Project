@@ -160,3 +160,18 @@ def test_distinct_registry_ids_with_same_name_are_not_merged(tmp_path):
         b = session.get(DoctorRegistryLink,'doctor-two')
         assert a.doctor_id != b.doctor_id
         assert a.doctor.doctor_name == b.doctor.doctor_name
+
+
+def test_selection_import_excludes_stale_invalid_records(tmp_path):
+    from src.database.selection import selected_documents
+    (tmp_path/'doc1').mkdir()
+    (tmp_path/'old').mkdir()
+    (tmp_path/'doc1/record.json').write_text(json.dumps(record()))
+    (tmp_path/'old/record.json').write_text('{}')
+    selection = tmp_path/'last_selection.json'
+    selection.write_text(json.dumps({'document_ids':['doc1']}))
+    engine = create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        assert import_directory(session,tmp_path,document_ids=selected_documents(selection)) == (1,0)
+        assert len(list(session.scalars(select(ExtractionRun)))) == 1

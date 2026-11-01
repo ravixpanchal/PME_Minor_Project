@@ -515,11 +515,14 @@ def import_one(session: Session, data: PMEExtraction):
 def import_directory(
     session: Session,
     directory: Path,
+    document_ids: set[str] | None = None,
 ):
     successful = 0
     failed = 0
 
     for path in sorted(directory.rglob("record.json")):
+        if document_ids is not None and path.parent.name not in document_ids:
+            continue
         try:
             with session.begin_nested():
                 _, created = import_one(
@@ -555,6 +558,7 @@ def import_directory(
 def sync_extractions(
     session: Session,
     directory: Path | None = None,
+    document_ids: set[str] | None = None,
 ) -> tuple[int, int]:
     """Import every extraction currently available in the pipeline output."""
     extraction_dir = directory or get_extraction_dir()
@@ -562,4 +566,4 @@ def sync_extractions(
         raise FileNotFoundError(
             f"Extraction directory does not exist: {extraction_dir}"
         )
-    return import_directory(session, extraction_dir)
+    return import_directory(session, extraction_dir, document_ids=document_ids)

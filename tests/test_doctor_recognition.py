@@ -87,7 +87,7 @@ def test_missing_and_malformed_detection(tmp_path):
     path = tmp_path / 'page.png'
     ink().save(path)
     recognizer = DoctorRecognizer(FakeExtractor(['{"signature":null,"stamp":null}']), tmp_path,
-                                 RecognitionConfig(registry_dir='gallery'))
+                                 RecognitionConfig(registry_dir='gallery', retry_empty_detection=False))
     result = recognizer.process('doc', {2: path}, tmp_path/'doc')
     assert result.status == 'missing_signature'
     assert result.doctor_name is None
@@ -206,3 +206,24 @@ def test_reject_invalid_evidence_contract():
     with pytest.raises(ValidationError):
         DoctorPageEvidence(page_index=2, image_width=100, image_height=100,
                            boxes={'signature':[0,0,float('nan'),.5]})
+
+
+def test_declared_pixel_boxes_are_scaled_to_raw_image(tmp_path):
+    path = evidence_page(tmp_path)
+    detection = '{"coordinate_space":"pixels","signature":[84,84,924,392],"stamp":null}'
+    recognizer = DoctorRecognizer(FakeExtractor([detection]),tmp_path,RecognitionConfig(registry_dir='gallery'))
+    result = recognizer.process('doc',{2:path},tmp_path/'doc')
+    assert result.evidence[0].boxes['signature'] == pytest.approx([84/2016,84/1008,924/2016,392/1008])
+    assert (tmp_path/result.signature_path).is_file()
+    response = tmp_path/'doc/doctor_evidence/page_0002/response_01.json'
+    assert 'coordinate_space' in response.read_text()
+
+
+def test_empty_full_page_retries_lower_region_and_remaps_boxes(tmp_path):
+    path = evidence_page(tmp_path)
+    responses = ['{"signature":null,"stamp":null}',
+                 '{"coordinate_space":"normalized","signature":[0.1,0.1,0.4,0.3],"stamp":null}']
+    recognizer = DoctorRecognizer(FakeExtractor(responses),tmp_path,RecognitionConfig(registry_dir='gallery'))
+    result = recognizer.process('doc',{2:path},tmp_path/'doc')
+    assert result.evidence[0].boxes['signature'] == pytest.approx([.1,.415,.4,.545])
+    assert (tmp_path/'doc/doctor_evidence/page_0002/response_02.json').is_file()

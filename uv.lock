@@ -826,7 +826,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", specifier = ">=2,<3" },
-    { name = "streamlit", specifier = ">=1.28.0" },
+    { name = "streamlit", specifier = ">=1.50.0" },
     { name = "torch", marker = "extra == 'vlm'", specifier = ">=2.4.0" },
     { name = "torchvision", marker = "extra == 'vlm'", specifier = ">=0.19.0" },
     { name = "transformers", marker = "extra == 'vlm'", specifier = ">=4.49.0,<5" },

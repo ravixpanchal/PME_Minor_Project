@@ -16,6 +16,7 @@ from src.database.database import get_session, init_db
 from src.database.importer import import_directory
 from scripts.validate_extractions import canonical_records
 from src.database.schemas import PMEExtraction
+from src.database.selection import selected_documents
 
 
 def main() -> int:
@@ -26,12 +27,16 @@ def main() -> int:
         type=Path,
         default=Path("data/processed/extractions"),
     )
+    parser.add_argument("--selection", type=Path, help="Import only document IDs listed in an extraction last_selection.json")
     args = parser.parse_args()
+    document_ids = selected_documents(args.selection) if args.selection else None
     if not args.directory.exists():
         parser.error(f"directory does not exist: {args.directory}")
 
     invalid = []
     for path in canonical_records(args.directory):
+        if document_ids is not None and path.parent.name not in document_ids:
+            continue
         try:
             PMEExtraction.from_file(path)
         except Exception as error:
@@ -44,7 +49,7 @@ def main() -> int:
     init_db()
     session = get_session()
     try:
-        successful, failed = import_directory(session, args.directory)
+        successful, failed = import_directory(session, args.directory, document_ids=document_ids)
     finally:
         session.close()
     print(f"\nProcessed: {successful}\nFailed: {failed}")

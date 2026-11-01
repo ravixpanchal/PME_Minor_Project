@@ -72,6 +72,7 @@ def main(argv=None) -> int:
     ap.add_argument("--source", choices=["vlm", "clean", "raw"], default="vlm")
     ap.add_argument("--long-edge", type=int, default=None)
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--doctor-only", action="store_true", help="Refresh doctor evidence on existing records without re-extracting candidate fields")
     ap.add_argument("--mode", choices=["document", "per_page"],
                     default="document",
                     help="document = single pass over all 4 pages, one JSON "
@@ -106,6 +107,8 @@ def main(argv=None) -> int:
     extractor = VlmSchemaExtractor()
     recognizer = DoctorRecognizer(extractor, config.root_dir, recognition_config)
     out_root = config.get_path("processed_dir") / "extractions"
+    out_root.mkdir(parents=True, exist_ok=True)
+    (out_root / "last_selection.json").write_text(json.dumps({"document_ids": doc_ids}, indent=2))
     n_pages = n_fail = 0
     # provenance attribution for document mode: every leaf is credited to the
     # page its schema section belongs to (v2 tags each section with `page:`)
@@ -115,7 +118,7 @@ def main(argv=None) -> int:
 
     for doc in doc_ids:
         rec_path = out_root / doc / "record.json"
-        if rec_path.exists() and not args.overwrite:
+        if rec_path.exists() and not args.overwrite and not args.doctor_only:
             log.info("doc %s: record exists, skipping (--overwrite to redo, including doctor recognition)",
                      doc[:12])
             continue
@@ -123,6 +126,20 @@ def main(argv=None) -> int:
         if list(pages["page_index"]) != [0, 1, 2, 3]:
             n_fail += 1
             log.error("doc %s: expected exactly pages 0..3, refusing partial/misordered report", doc)
+            continue
+        if args.doctor_only:
+            if not rec_path.exists():
+                log.error("doc %s has no record; omit --doctor-only for first extraction", doc)
+                n_fail += 1
+                continue
+            try:
+                record = ExtractionRecord.model_validate_json(rec_path.read_text())
+                record.doctor_recognition = recognize_doctor(recognizer, doc, pages, rec_path.parent)
+                write_record(rec_path, record)
+                n_fail += record.doctor_recognition.status == "error"
+            except Exception:
+                log.exception("doc %s doctor-only refresh failed", doc)
+                n_fail += 1
             continue
         schema_fields = extractor.schema.fields
         # person -> document mapping (acceptance: correct and logged)

@@ -16,7 +16,7 @@ def load_vlm(model_id):
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     else:
         dtype = torch.float32
-    processor = AutoProcessor.from_pretrained(model_id)
+    processor = AutoProcessor.from_pretrained(model_id, use_fast=False)
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_id, torch_dtype=dtype, device_map=device)
     model.eval()

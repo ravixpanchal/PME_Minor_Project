@@ -21,6 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.extraction.vlm_extractor import _first_json_object, _pin_size
 from src.models.schemas import DoctorRecognition
 from src.extraction.doctor_evidence import save_evidence
+from src.utils.logger import setup_logger
+
+log = setup_logger("doctor_recognition")
 
 
 class RecognitionConfig(BaseModel):
@@ -30,6 +33,8 @@ class RecognitionConfig(BaseModel):
     ambiguity_margin: float = Field(default=0.10, gt=0, le=1)
     min_inliers: int = Field(default=18, ge=8)
     min_ink_pixels: int = Field(default=100, ge=30)
+    detection_long_edge: int = Field(default=2016, ge=672, le=2688)
+    retry_empty_detection: bool = True
     min_sharpness: float = Field(default=12, ge=0)
 
 
@@ -206,15 +211,48 @@ class DoctorRecognizer:
         self.extractor, self.root, self.cfg = extractor, root, cfg
         self.registry = DoctorRegistry(root / cfg.registry_dir, cfg)
 
-    def ask_json(self, image, prompt):
-        raw = self.extractor._ask([_pin_size(image, 1344)], prompt, max_new_tokens=1000)
+    def ask_json(self, image, prompt, long_edge=1344):
+        sent = _pin_size(image, long_edge)
+        raw = self.extractor._ask([sent], prompt, max_new_tokens=1000)
+        if getattr(self, "diagnostic_dir", None) is not None:
+            self.request_number += 1
+            (self.diagnostic_dir / f"response_{self.request_number:02d}.json").write_text(
+                json.dumps({"image_size": list(sent.size), "prompt": prompt, "response": raw}, indent=2))
         obj = _first_json_object(raw)
         if obj is None:
-            raise ValueError("Doctor localization/OCR returned no JSON object")
+            raise ValueError("Doctor localization/OCR returned no JSON object; inspect saved responses")
         result = json.loads(obj)
         if not isinstance(result, dict):
             raise ValueError("Invalid doctor evidence object")
         return result
+
+    def locate(self, image):
+        sent = _pin_size(image, self.cfg.detection_long_edge)
+        obj = self.ask_json(image,
+            'Locate only the Railway medical examiner doctor signature and stamp. '
+            'Exclude candidate/witness signatures, printed labels and clinical handwriting. '
+            f'This image is {sent.width} pixels wide and {sent.height} pixels high. '
+            'Return {"coordinate_space":"pixels", "signature":[x1,y1,x2,y2] or null, '
+            '"stamp":[x1,y1,x2,y2] or null, "same_doctor":true or false, '
+            '"multiple_doctors":true or false}. Use absolute pixel coordinates in THIS image. '
+            'Preserve both regions even if they overlap. Do not transcribe the signature as text. '
+            'Use tight boxes; null only for an absent or unidentifiable region. '
+            'same_doctor must be true only for an unambiguous signature/stamp pair.',
+            long_edge=self.cfg.detection_long_edge)
+        space = obj.get("coordinate_space", "normalized")
+        for kind in ("signature", "stamp"):
+            box = obj.get(kind)
+            if isinstance(box, dict):
+                box = box.get("box", box.get("bbox"))
+            if isinstance(box, list) and len(box) == 4:
+                if space == "pixels":
+                    box = [v/(sent.width if i % 2 == 0 else sent.height) if type(v) in (int,float) else v for i,v in enumerate(box)]
+                elif space == "normalized_1000":
+                    box = [v/1000 if type(v) in (int,float) else v for v in box]
+                elif space != "normalized":
+                    box = None
+            obj[kind] = box
+        return obj
 
     def process(self, document_id: str, pages: dict[int, Path], out_dir: Path):
         candidates, errors, evidence = [], [], []
@@ -225,19 +263,32 @@ class DoctorRecognizer:
             try:
                 with Image.open(pages[idx]) as im:
                     image = im.convert("RGB")
-                obj = self.ask_json(image,
-                    'Locate only the Railway medical examiner doctor signature and stamp. '
-                    'Exclude candidate/witness signatures, printed signature labels and other handwriting. '
-                    'Return {"signature": [x1,y1,x2,y2] or null, "stamp": [x1,y1,x2,y2] or null, '
-                    '"same_doctor": true or false, "multiple_doctors": true or false}. '
-                    'Coordinates MUST be normalized 0..1 relative to the entire image. '
-                    'Use tight boxes; signature box must exclude stamp text and printed lines. '
-                    'Preserve both boxes even when stamp and signature overlap. If uncertain set boxes null. '
-                    'same_doctor is true only when the stamp unambiguously belongs to that signature.')
+                self.diagnostic_dir = out_dir / "doctor_evidence" / f"page_{idx:04d}"
+                self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
+                self.request_number = 0
+                obj = self.locate(image)
+                if self.cfg.retry_empty_detection and all(crop_box(image, obj.get(k)) is None for k in ("signature", "stamp")):
+                    # A second, larger view of the bottom portion can expose small
+                    # examiner marks. Coordinates must be mapped back to raw page.
+                    top = int(image.height * .35)
+                    local = image.crop((0, top, image.width, image.height))
+                    retry = self.locate(local)
+                    for kind in ("signature", "stamp"):
+                        box = retry.get(kind)
+                        if crop_box(local, box) is not None:
+                            retry[kind] = [box[0], (top+box[1]*local.height)/image.height,
+                                           box[2], (top+box[3]*local.height)/image.height]
+                        else:
+                            retry[kind] = None
+                    obj = retry
                 multiple_doctors |= obj.get("multiple_doctors") is True
                 sig, stamp = crop_box(image, obj.get("signature")), crop_box(image, obj.get("stamp"))
                 item = save_evidence(image, {"signature": sig, "stamp": stamp}, obj, idx, out_dir, self.root)
                 evidence.append(item)
+                if not item.boxes:
+                    item.notes.append("No valid doctor boxes detected; inspect response JSON files in this page directory")
+                log.info("doc %s page %d: signature_saved=%s stamp_saved=%s diagnostics=%s",
+                         document_id[:12], idx+1, bool(item.signature_path), bool(item.stamp_path), self.diagnostic_dir)
                 item.same_doctor = obj.get("same_doctor") is True
                 item.signature_usable = sig is not None and usable(sig, self.cfg)
                 item.stamp_usable = stamp is not None and usable(stamp, self.cfg)
@@ -262,11 +313,15 @@ class DoctorRecognizer:
                         'OCR this doctor stamp. Return {"text": "verbatim visible stamp text", '
                         '"doctor_name": "full personal name" or null}. Do not infer missing letters '
                         'or use a designation/hospital as a name. Unreadable personal name must be null.')
+                    item.stamp_text = first.get("text") if isinstance(first.get("text"), str) else None
                     second = self.ask_json(stamp,
                         'Read only the fully legible personal name printed inside this stamp. '
                         'Return {"doctor_name": "name" or null}. Never complete initials or guess letters.')
                     a, b = valid_name(first.get("doctor_name")), valid_name(second.get("doctor_name"))
                     text = first.get("text")
+                    item.stamp_text = text if isinstance(text, str) else None
+                    if not (a and b and name_key(a) == name_key(b)):
+                        item.notes.append("Stamp personal name absent/unreadable or OCR reads disagree; not enrolled")
                     if a and b and name_key(a) == name_key(b) and isinstance(text, str) and name_key(a) in name_key(text):
                         name = a
                 item.doctor_name = name
@@ -274,6 +329,7 @@ class DoctorRecognizer:
                 candidate.update(name=name, text=item.stamp_text)
             except Exception as exc:
                 errors.append(f"Page {idx+1}: {type(exc).__name__}: {exc}")
+                log.warning("doc %s page %d: %s", document_id[:12], idx+1, exc)
         names = {name_key(c["name"]) for c in candidates if c["name"]}
         candidates.sort(key=lambda c: (c["signature"] is not None,
                                       bool(c["name"] and c["paired"]),
@@ -302,4 +358,7 @@ class DoctorRecognizer:
             setattr(result, field, getattr(selected, field))
         result.evidence = evidence
         result.notes.extend(errors)
+        log.info("doc %s doctor: status=%s name=%s similarity=%.3f signature=%s stamp=%s notes=%s",
+                 document_id[:12], result.status, result.doctor_name, result.confidence,
+                 result.signature_path, result.stamp_path, result.notes)
         return result

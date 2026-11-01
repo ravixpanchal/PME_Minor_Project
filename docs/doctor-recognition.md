@@ -157,3 +157,42 @@ rates, calibration, GPU memory/runtime, live Streamlit behavior and non-SQLite
 schema upgrades remain unverified. The matcher is a conservative untrained baseline;
 validate a representative labeled holdout and review initial gallery enrollments
 before relying on its automated doctor names.
+
+## Recovering a four-candidate trial
+
+Date parsing accepts day/month/two-digit-year report dates such as `29/7/25` and
+`12-08-26` as well as four-digit-year formats. Two-digit years follow Python's
+standard pivot (00–68 => 2000–2068, 69–99 => 1969–1999). Invalid calendar dates
+still fail validation; raw date strings remain in extraction JSON for audit.
+
+To refresh only doctor evidence for the four existing extracted candidates:
+
+```bash
+HF_HUB_DISABLE_IMPLICIT_TOKEN=1 uv run --extra vlm python -m src.extraction.run_extraction --ndocs 4 --doctor-only
+uv run python -m src.database.run_database --selection data/processed/extractions/last_selection.json
+uv run streamlit run frontend/app.py
+```
+
+Use `--ndocs 4 --overwrite` instead of `--doctor-only` for a first extraction or
+when candidate fields also need refreshing. `last_selection.json` records the
+selected document IDs; the database `--selection` option excludes unrelated old
+records. Streamlit no longer reimports every saved record on every refresh; its
+Sync button imports the current selection, and the view defaults to that selection.
+The normal database command without `--selection` still imports all saved records.
+
+Doctor localization now requests absolute pixels with an explicit coordinate
+space, then maps boxes to original-image coordinates. Normalized 0..1 and explicitly
+declared normalized 0..1000 responses are also supported. Unexpected coordinate
+systems are rejected rather than guessed. Detection uses a larger 2016-pixel long
+edge. If no valid boxes are found, it retries a closer view of the lower 65% of the
+page and maps coordinates back to the full page; candidate signatures remain
+excluded by the prompt. This retry does not guarantee detection on real reports.
+
+Every doctor VLM response is saved with input dimensions/prompt in
+`doctor_evidence/page_XXXX/response_XX.json`, even when parsing fails or the model
+returns empty boxes. Logs explicitly report saved crops, matching status, name,
+notes and diagnostic location. These files contain medical evidence and should
+be handled with the same care as the reports. No quality or matching thresholds
+were lowered to force an identity. If a report still produces no crops/name,
+inspect its `record.json` doctor metadata and saved responses to distinguish an
+empty detection, coordinate problem, OCR disagreement or quality rejection.
