@@ -64,11 +64,21 @@ def recognize_doctor(recognizer, doc, pages, out_dir):
         return DoctorRecognition(status="error", notes=[str(exc)])
 
 
+def select_documents(doc_ids, candidates=None):
+    """One-based manifest-order positions for reproducible human-sized trials."""
+    if not candidates:
+        return doc_ids
+    if len(candidates) != len(set(candidates)) or any(i<1 or i>len(doc_ids) for i in candidates):
+        raise ValueError(f"Candidate numbers must be unique positions from 1 to {len(doc_ids)}")
+    return [doc_ids[i-1] for i in candidates]
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--ndocs", type=int, default=None,
                     help="first N complete person-documents")
     ap.add_argument("--doc", type=str, default=None)
+    ap.add_argument("--candidates", type=int, nargs="+", help="One-based positions in manifest order, e.g. 1 10 27")
     ap.add_argument("--source", choices=["vlm", "clean", "raw"], default="vlm")
     ap.add_argument("--long-edge", type=int, default=None)
     ap.add_argument("--overwrite", action="store_true")
@@ -79,6 +89,8 @@ def main(argv=None) -> int:
                          "per person (default); per_page = one call per page "
                          "+ first-non-null merge (A/B fallback)")
     args = ap.parse_args(argv)
+    if sum(bool(v) for v in (args.ndocs,args.doc,args.candidates)) > 1:
+        ap.error("Choose one of --ndocs, --doc or --candidates")
 
     manifest = config.get_path("manifest_file")
     if not manifest.exists():
@@ -90,6 +102,10 @@ def main(argv=None) -> int:
                     SOURCE_COLS[args.source])
 
     doc_ids = list(dict.fromkeys(df["document_id"]))   # manifest order
+    try:
+        doc_ids = select_documents(doc_ids, args.candidates)
+    except ValueError as exc:
+        ap.error(str(exc))
     if args.doc:
         doc_ids = [d for d in doc_ids if d == args.doc]
     if args.ndocs:

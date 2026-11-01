@@ -36,6 +36,7 @@ class RecognitionConfig(BaseModel):
     min_ink_pixels: int = Field(default=100, ge=30)
     detection_long_edge: int = Field(default=2016, ge=672, le=2688)
     retry_empty_detection: bool = True
+    combined_padding: float = Field(default=.008, ge=0, le=.03)
     min_sharpness: float = Field(default=12, ge=0)
 
 
@@ -257,23 +258,37 @@ class DoctorRecognizer:
             raise ValueError("Invalid doctor evidence object")
         return result
 
-    def locate(self, image):
+    def locate(self, image, page_index=None):
         sent = _pin_size(image, self.cfg.detection_long_edge)
+        layout = (
+            "Report page 3: the examiner block is near the bottom centre/right, usually left of the candidate photograph. "
+            "Anchor on 'Initials of Railway Medical Examiner' and 'Office Seal'. "
+            if page_index == 2 else
+            "Report page 4: the examiner block is at the bottom right, BELOW the candidate signature/thumbprint section. "
+            "Anchor on 'Signature of the Medical Examiner'. " if page_index == 3 else "")
         obj = self.ask_json(image,
+            layout +
             'Locate only the Railway medical examiner doctor signature and stamp. '
             'Exclude candidate/witness signatures, printed labels and clinical handwriting. '
             f'This image is {sent.width} pixels wide and {sent.height} pixels high. '
             'Return {"coordinate_space":"pixels", "signature":[x1,y1,x2,y2] or null, '
-            '"stamp":[x1,y1,x2,y2] or null, "same_doctor":true or false, '
+            '"stamp":[x1,y1,x2,y2] or null, "doctor_region":[x1,y1,x2,y2] or null, '
+            '"same_doctor":true or false, '
             '"multiple_doctors":true or false}. Use absolute pixel coordinates in THIS image. '
             'Preserve both regions even if they overlap. Do not transcribe the signature as text. '
             'Use tight boxes; null only for an absent or unidentifiable region. '
             'Include ALL handwritten signature strokes even when they cross printed stamp/form text. '
-            'The stamp may include English and Hindi versions of the same doctor name. '
+            'The stamp box must include the English and Hindi name lines and designation/location line. '
+            'Do not stop at form borders: stamped text can extend outside them. '
+            'doctor_region must be ONE rectangular crop enclosing the entire examiner signature, '
+            'both stamp name lines and the designation/location line (such as DMO/BRC or Sr. DMO/BRC), '
+            'with a small margin. Preserve long upper and lower pen strokes. '
+            'Do not include candidate signature/thumbprint, photograph or unrelated clinical notes. '
+            'Nearby examiner-label text inside this rectangle is allowed. Do not crop only the English name. '
             'same_doctor must be true only for an unambiguous signature/stamp pair.',
             long_edge=self.cfg.detection_long_edge)
         space = obj.get("coordinate_space", "normalized")
-        for kind in ("signature", "stamp"):
+        for kind in ("signature", "stamp", "doctor_region"):
             box = obj.get(kind)
             if isinstance(box, dict):
                 box = box.get("box", box.get("bbox"))
@@ -299,14 +314,14 @@ class DoctorRecognizer:
                 self.diagnostic_dir = out_dir / "doctor_evidence" / f"page_{idx:04d}"
                 self.diagnostic_dir.mkdir(parents=True, exist_ok=True)
                 self.request_number = 0
-                obj = self.locate(image)
-                if self.cfg.retry_empty_detection and all(crop_box(image, obj.get(k)) is None for k in ("signature", "stamp")):
+                obj = self.locate(image, page_index=idx)
+                if self.cfg.retry_empty_detection and all(crop_box(image, obj.get(k)) is None for k in ("signature", "stamp", "doctor_region")):
                     # A second, larger view of the bottom portion can expose small
                     # examiner marks. Coordinates must be mapped back to raw page.
                     top = int(image.height * .35)
                     local = image.crop((0, top, image.width, image.height))
-                    retry = self.locate(local)
-                    for kind in ("signature", "stamp"):
+                    retry = self.locate(local, page_index=idx)
+                    for kind in ("signature", "stamp", "doctor_region"):
                         box = retry.get(kind)
                         if crop_box(local, box) is not None:
                             retry[kind] = [box[0], (top+box[1]*local.height)/image.height,
@@ -316,7 +331,7 @@ class DoctorRecognizer:
                     obj = retry
                 multiple_doctors |= obj.get("multiple_doctors") is True
                 sig, stamp = crop_box(image, obj.get("signature")), crop_box(image, obj.get("stamp"))
-                item = save_evidence(image, {"signature": sig, "stamp": stamp}, obj, idx, out_dir, self.root)
+                item = save_evidence(image, {"signature": sig, "stamp": stamp}, obj, idx, out_dir, self.root, padding=self.cfg.combined_padding)
                 evidence.append(item)
                 if not item.boxes:
                     item.notes.append("No valid doctor boxes detected; inspect response JSON files in this page directory")

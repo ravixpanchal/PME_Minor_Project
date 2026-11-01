@@ -242,3 +242,13 @@ legacy-gallery handling and retrieval of a saved name without a current stamp.
 The real screenshots establish the required layout but were not processed with a
 VLM here. Short/sparse handwriting or ink almost entirely inside the stamp may
 still be insufficient for reliable matching; review results on the GPU system.
+
+## Bounding-box layout checked against the supplied scan
+
+See [the report layout review](report-layout-review.md) for page-specific anchors,
+complete-region crop rules and an optional mixed-doctor trial. The localizer now
+requests a `doctor_region` containing the whole examiner block in addition to
+separate signature/stamp boxes. Combined crops prefer a validated enclosing region
+or use a padded union; raw signatures remain intact and matching assets remain
+separate. Independent crops are not discarded if a combined region is rejected.
+The enclosing box and child boxes use normalized coordinates in the saved metadata.

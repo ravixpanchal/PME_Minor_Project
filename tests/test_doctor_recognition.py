@@ -155,7 +155,7 @@ def test_annotation_coordinates_and_combined_crop(tmp_path):
     image = Image.new('RGB', (1000, 600), 'white')
     boxes = {'signature': [.1, .2, .3, .4], 'stamp': [.4, .3, .6, .5]}
     crops = {kind: crop_box(image, box) for kind, box in boxes.items()}
-    item = save_evidence(image, crops, boxes, 2, tmp_path/'doc', tmp_path)
+    item = save_evidence(image, crops, boxes, 2, tmp_path/'doc', tmp_path, padding=0)
     assert item.boxes['combined'] == [.1, .2, .6, .5]
     assert item.boxes_pixels['combined'] == [100, 120, 600, 300]
     with Image.open(tmp_path/item.combined_path) as combined:

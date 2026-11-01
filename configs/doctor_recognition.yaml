@@ -9,3 +9,6 @@ min_sharpness: 12
 # Full-page localization resolution; retry a closer lower-page view if both boxes are absent.
 detection_long_edge: 2016
 retry_empty_detection: true
+
+# Small full-page-relative margin around the signature/stamp union when no valid enclosing block is returned.
+combined_padding: 0.008
